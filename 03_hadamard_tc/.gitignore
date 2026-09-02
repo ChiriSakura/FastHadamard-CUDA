@@ -1,0 +1,14 @@
+# 构建产物
+/build/
+__pycache__/
+*.pyc
+
+# 正确性测试会为大规模配置生成数 GB 的临时二进制；CSV/Markdown 摘要保留提交。
+/results/dumps/
+/results/dumps_lib/
+
+# Profiler 二进制报告适合本地分析，不直接纳入代码提交。
+/results/*.qdstrm
+/results/*.nsys-rep
+/results/*.sqlite
+/results/*.ncu-rep
