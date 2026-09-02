@@ -8,7 +8,7 @@
 //
 // 归一化约定：
 //   - 非归一化: y = H x
-//   - 归一化:   y = H x / sqrt(head_dim)      （默认，见 docs/design.md）
+//   - 归一化:   y = H x / sqrt(head_dim)      （默认，见 docs/final_report.md）
 #pragma once
 
 #include <cmath>

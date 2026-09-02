@@ -174,7 +174,8 @@ Python 将输入严格 reshape 为 `[-1, head_dim]`，再调用官方库。双�
 5. 尚未与官方库、warp-shuffle 版本或 Tensor Core 版本做同环境性能对比，因此不能
    声称当前实现优于这些方案。
 
-完整结果见 `results/results.csv` 和自动生成的 `results/report.md`。
+完整结果见 `results/results.csv`；官方库逐配置结果见
+`results/library_check.csv`。
 
 ## 7. nsys / ncu 使用与实测分析
 

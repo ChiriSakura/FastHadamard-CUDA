@@ -9,7 +9,6 @@
 #
 # 输出：
 #   results/results.csv   每个配置一行（性能 + 误差）
-#   results/report.md     由 CSV 生成的 Markdown 报告
 #
 # 用法：
 #   bash scripts/run_tests.sh          # 全量
@@ -70,10 +69,6 @@ if [[ "$MODE" == "all" ]]; then
   done
 fi
 
-echo ""
-echo "[run_tests] 汇总报告 ..."
-python3 "$ROOT/scripts/make_report.py" "$CSV" -o "$RESULTS/report.md"
-
 # 官方库验收测试：与 fast_hadamard_transform 逐位对照（项目验收标准）
 # 需要 ~/hadamard_env（torch + fast_hadamard_transform），搭建方法见 README
 if [[ -x "$HOME/hadamard_env/bin/python" ]]; then
@@ -90,7 +85,7 @@ fi
 # 汇总通过情况（最后一列 pass）
 TOTAL=$(( $(wc -l < "$CSV") - 1 ))
 PASS=$(awk -F, 'NR>1 && $NF=="true"' "$CSV" | wc -l)
-echo "[run_tests] 完成：$TOTAL 个配置，$PASS 个通过；结果在 $CSV 与 $RESULTS/report.md"
+echo "[run_tests] 完成：$TOTAL 个配置，$PASS 个通过；结果在 $CSV"
 if [[ "$PASS" -ne "$TOTAL" ]]; then
-  echo "[run_tests] 注意：存在未通过绝对阈值的配置（大概率是输出舍入极限，见 report.md 中 ❌* 注释）"
+  echo "[run_tests] 注意：存在未通过绝对阈值的配置；BF16 outlier 的舍入边界见 docs/final_report.md"
 fi

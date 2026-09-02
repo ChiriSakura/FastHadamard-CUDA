@@ -150,7 +150,9 @@ def main():
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         need_header = not csv_path.exists()
         with csv_path.open("a", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=list(results[0].keys()))
+            # 固定 LF，保证结果文件跨平台提交时行尾稳定。
+            w = csv.DictWriter(f, fieldnames=list(results[0].keys()),
+                               lineterminator="\n")
             if need_header:
                 w.writeheader()
             w.writerows(results)

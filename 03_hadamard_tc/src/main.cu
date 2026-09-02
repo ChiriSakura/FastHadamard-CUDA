@@ -52,7 +52,7 @@ struct Config {
   int num_heads = 32;
   int head_dim = 128;
   std::string dtype = "fp16";       // fp16 | bf16
-  bool normalize = true;            // 默认归一化，理由见 docs/design.md
+  bool normalize = true;            // 默认归一化，理由见 docs/final_report.md
   std::string dist = "normal";      // normal | uniform | outlier
   uint64_t seed = 42;               // 固定种子保证可复现
   double outlier_ratio = 0.05;      // outlier 分布：被放大的元素比例

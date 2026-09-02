@@ -122,7 +122,9 @@ def main():
     # CSV
     CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
     with CSV_PATH.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(results[0].keys()))
+        # 固定 LF，避免 Linux 仓库中因 csv 模块默认 CRLF 产生无意义 diff。
+        w = csv.DictWriter(f, fieldnames=list(results[0].keys()),
+                           lineterminator="\n")
         w.writeheader()
         w.writerows(results)
 
