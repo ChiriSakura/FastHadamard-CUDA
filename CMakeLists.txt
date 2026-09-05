@@ -28,9 +28,18 @@ add_executable(hadamard_bench
   src/hadamard.cu
 )
 
+add_executable(hadamard_advanced_bench
+  src/advanced_bench.cu
+  src/hadamard.cu
+)
+
 target_include_directories(hadamard_bench PRIVATE include)
+target_include_directories(hadamard_advanced_bench PRIVATE include)
 
 target_compile_options(hadamard_bench PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:-O3>
+)
+target_compile_options(hadamard_advanced_bench PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:-O3>
 )
 
@@ -42,5 +51,8 @@ endif()
 
 # 输出放到构建目录根部，便于 ./hadamard_bench 直接运行
 set_target_properties(hadamard_bench PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+set_target_properties(hadamard_advanced_bench PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )

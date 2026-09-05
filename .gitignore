@@ -15,3 +15,10 @@ __pycache__/
 /results/*.nsys-rep
 /results/*.sqlite
 /results/*.ncu-rep
+/results/profile_*/ncu_*.ncu-rep
+/results/profile_*/nsys_*.nsys-rep
+/results/profile_*/nsys_*.sqlite
+/results/profile_*/ncu_raw/
+/results/optimization_*/nsys_*.nsys-rep
+/results/optimization_*/nsys_*.sqlite
+/results/optimization_*/ncu/*.ncu-rep

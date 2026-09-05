@@ -62,6 +62,7 @@ struct Config {
   bool check = true;
   std::string dump_dir = "";        // 非空时 dump 二进制
   std::string csv_path = "";        // 非空时追加 CSV
+  std::string device_json = "";     // 非空时写出 CUDA 设备属性（Roofline 用）
   std::string input_bin = "";       // 非空时从文件加载低精度输入（跳过随机生成）
 };
 
@@ -83,6 +84,7 @@ static void print_usage(const char* prog) {
       "  --check <bool>         是否做正确性检查      (default true)\n"
       "  --dump_dir <path>      dump 二进制的目录     (default 不 dump)\n"
       "  --csv <path>           追加 CSV 日志路径     (default 不写)\n"
+      "  --device_json <path>   写出 CUDA 设备属性 JSON (default 不写)\n"
       "  --input_bin <path>     从文件加载输入(低精度原始字节) (default 随机生成)\n",
       prog);
 }
@@ -120,6 +122,7 @@ static bool parse_args(int argc, char** argv, Config& cfg) {
     else if (key == "--check") cfg.check = parse_bool(next("bool"));
     else if (key == "--dump_dir") cfg.dump_dir = next("path");
     else if (key == "--csv") cfg.csv_path = next("path");
+    else if (key == "--device_json") cfg.device_json = next("path");
     else if (key == "--input_bin") cfg.input_bin = next("path");
     else if (key == "--help" || key == "-h") { print_usage(argv[0]); std::exit(0); }
     else {
@@ -347,6 +350,50 @@ static void append_csv(const Config& cfg, long long total_tokens, int warmup,
     << "\n";
 }
 
+// 保存计算 Roofline 所需的设备上限。clockRate/memoryClockRate 来自 CUDA runtime
+// 的设备属性；绘图脚本会明确把由这些属性推导的 roof 标为 theoretical。
+static void write_device_json(const std::string& path, int device,
+                              const cudaDeviceProp& prop) {
+  const fs::path output(path);
+  if (!output.parent_path().empty()) {
+    fs::create_directories(output.parent_path());
+  }
+  std::ofstream f(output);
+  if (!f) {
+    std::fprintf(stderr, "[error] 无法写入设备信息 %s\n", path.c_str());
+    std::exit(EXIT_FAILURE);
+  }
+  int clock_rate_khz = 0;
+  int memory_clock_rate_khz = 0;
+#if CUDART_VERSION >= 13000
+  // CUDA 13 removed these two deprecated cudaDeviceProp members. Their
+  // cudaDeviceAttr ABI identifiers remain 13 and 36, respectively.
+  CUDA_CHECK(cudaDeviceGetAttribute(
+      &clock_rate_khz, static_cast<cudaDeviceAttr>(13), device));
+  CUDA_CHECK(cudaDeviceGetAttribute(
+      &memory_clock_rate_khz, static_cast<cudaDeviceAttr>(36), device));
+#else
+  clock_rate_khz = prop.clockRate;
+  memory_clock_rate_khz = prop.memoryClockRate;
+#endif
+  f << "{\n"
+    << "  \"device_index\": " << device << ",\n"
+    << "  \"name\": \"" << prop.name << "\",\n"
+    << "  \"compute_capability_major\": " << prop.major << ",\n"
+    << "  \"compute_capability_minor\": " << prop.minor << ",\n"
+    << "  \"sm_count\": " << prop.multiProcessorCount << ",\n"
+    << "  \"clock_rate_khz\": " << clock_rate_khz << ",\n"
+    << "  \"memory_clock_rate_khz\": " << memory_clock_rate_khz << ",\n"
+    << "  \"memory_bus_width_bits\": " << prop.memoryBusWidth << ",\n"
+    << "  \"total_global_memory_bytes\": " << prop.totalGlobalMem << ",\n"
+    << "  \"l2_cache_bytes\": " << prop.l2CacheSize << ",\n"
+    << "  \"shared_memory_per_block_bytes\": " << prop.sharedMemPerBlock
+    << ",\n"
+    << "  \"registers_per_block\": " << prop.regsPerBlock << ",\n"
+    << "  \"warp_size\": " << prop.warpSize << "\n"
+    << "}\n";
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -362,6 +409,9 @@ int main(int argc, char** argv) {
   CUDA_CHECK(cudaGetDevice(&device));
   cudaDeviceProp prop{};
   CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
+  if (!cfg.device_json.empty()) {
+    write_device_json(cfg.device_json, device, prop);
+  }
 
   const DataType dtype = (cfg.dtype == "fp16") ? DataType::FP16 : DataType::BF16;
   const long long total_tokens =

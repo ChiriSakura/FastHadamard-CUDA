@@ -45,5 +45,44 @@ int launch_hadamard(const void* input,
                     bool normalize,
                     cudaStream_t stream);
 
+// Week3 优化入口。数学与数值语义和 launch_hadamard 完全一致，但使用：
+//   1. warp shuffle 完成 warp 内蝶形；
+//   2. half2/bfloat162 相邻元素向量化 load/store；
+//   3. d=64 每 block 4 tokens、d=128 每 block 2 tokens。
+int launch_hadamard_optimized(const void* input,
+                              void* output,
+                              int batch_size,
+                              int seq_len,
+                              int num_heads,
+                              int head_dim,
+                              DataType dtype,
+                              bool normalize,
+                              cudaStream_t stream);
+
+// 对低精度 Hadamard 输出做 per-token symmetric INT4 量化。
+// q = clamp(round_to_nearest_even(x / scale), -7, 7), scale=max(abs(x))/7。
+// packed_output 的低/高 nibble 依次保存相邻两个元素的 4-bit two's-complement；
+// 每 token 占 head_dim/2 bytes，scales 每 token 一个 FP32。
+int launch_quantize_int4(const void* input,
+                         unsigned char* packed_output,
+                         float* scales,
+                         int total_tokens,
+                         int head_dim,
+                         DataType dtype,
+                         cudaStream_t stream);
+
+// 融合 optimized Hadamard + INT4。为严格匹配 unfused 路径，Hadamard FP32
+// 中间结果在寄存器中先模拟转换到输入 dtype，再计算 scale/INT4，避免写回中间张量。
+int launch_hadamard_fused_quant_int4(const void* input,
+                                     unsigned char* packed_output,
+                                     float* scales,
+                                     int batch_size,
+                                     int seq_len,
+                                     int num_heads,
+                                     int head_dim,
+                                     DataType dtype,
+                                     bool normalize,
+                                     cudaStream_t stream);
+
 // 工具：数据类型名称（日志/CSV 用）
 const char* dtype_name(DataType dtype);

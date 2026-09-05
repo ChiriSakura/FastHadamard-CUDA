@@ -18,11 +18,13 @@ NVCCFLAGS := -O3 -std=c++17 \
              -Iinclude
 
 BIN := $(OUT)/hadamard_bench
+ADV_BIN := $(OUT)/hadamard_advanced_bench
 OBJS := $(OUT)/hadamard.o $(OUT)/main.o
+ADV_OBJS := $(OUT)/hadamard.o $(OUT)/advanced_bench.o
 
 .PHONY: all clean smoke run_sweep
 
-all: $(BIN)
+all: $(BIN) $(ADV_BIN)
 
 $(OUT):
 	mkdir -p $(OUT)
@@ -33,12 +35,20 @@ $(OUT)/hadamard.o: src/hadamard.cu include/hadamard.cuh include/cuda_check.cuh |
 $(OUT)/main.o: src/main.cu src/reference_cpu.h include/hadamard.cuh include/cuda_check.cuh | $(OUT)
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
+$(OUT)/advanced_bench.o: src/advanced_bench.cu include/hadamard.cuh include/cuda_check.cuh | $(OUT)
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
+
 $(BIN): $(OBJS)
 	$(NVCC) $(NVCCFLAGS) $(OBJS) -o $@
 
-smoke: $(BIN)
+$(ADV_BIN): $(ADV_OBJS)
+	$(NVCC) $(NVCCFLAGS) $(ADV_OBJS) -o $@
+
+smoke: $(BIN) $(ADV_BIN)
 	$(BIN) --batch 1 --seq 64 --heads 4 --head_dim 128 --dtype fp16 \
 	       --normalize true --warmup 2 --iters 5 --check true
+	$(ADV_BIN) --batch 1 --seq 32 --heads 2 --head_dim 128 --dtype fp16 \
+	       --normalize true --warmup 2 --iters 5
 
 run_sweep: $(BIN)
 	bash scripts/run_tests.sh
