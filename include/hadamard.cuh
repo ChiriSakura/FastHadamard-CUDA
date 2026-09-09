@@ -86,3 +86,38 @@ int launch_hadamard_fused_quant_int4(const void* input,
 
 // 工具：数据类型名称（日志/CSV 用）
 const char* dtype_name(DataType dtype);
+
+// ---------------------------------------------------------------------------
+// warp-per-token FHT（optimized 的进一步优化版本）
+// ---------------------------------------------------------------------------
+//
+// 与 launch_hadamard / launch_hadamard_optimized 数学语义完全一致，但把每线程
+// 负责的元素数从 2 提升到 head_dim/32，于是：
+//   1. 一个 warp 恰好处理一个 token，蝶形的 log2(head_dim/32) 个低阶 stage 在
+//      寄存器数组内完成，高 5 个 stage 全部用 __shfl_xor_sync；
+//   2. 完全不使用 shared memory，也不需要任何 __syncthreads()；
+//   3. global load/store 宽度提升到 head_dim*2/32 字节（d=256 即 128-bit）。
+// 要求 head_dim >= 64（否则一个 warp 装不满 2 个元素/线程）。
+int launch_hadamard_warp(const void* input,
+                         void* output,
+                         int batch_size,
+                         int seq_len,
+                         int num_heads,
+                         int head_dim,
+                         DataType dtype,
+                         bool normalize,
+                         cudaStream_t stream);
+
+// warp-per-token FHT + per-token symmetric INT4 融合。量化协议与
+// launch_hadamard_fused_quant_int4 完全相同（含写回前的 dtype 舍入模拟），
+// 但 per-token max 归约用纯 warp shuffle，没有 shared memory 与 barrier。
+int launch_hadamard_fused_quant_int4_warp(const void* input,
+                                          unsigned char* packed_output,
+                                          float* scales,
+                                          int batch_size,
+                                          int seq_len,
+                                          int num_heads,
+                                          int head_dim,
+                                          DataType dtype,
+                                          bool normalize,
+                                          cudaStream_t stream);

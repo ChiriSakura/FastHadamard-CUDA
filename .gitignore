@@ -10,15 +10,20 @@ __pycache__/
 /results/dumps/
 /results/dumps_lib/
 
-# Profiler 二进制报告仅用于本地分析。
-/results/*.qdstrm
-/results/*.nsys-rep
-/results/*.sqlite
-/results/*.ncu-rep
-/results/profile_*/ncu_*.ncu-rep
-/results/profile_*/nsys_*.nsys-rep
-/results/profile_*/nsys_*.sqlite
+# 原始二进制留在 scratch；Git 保留 CSV/JSON、关键日志与图表。
+/results/**/*.bin
+/results/**/*.qdstrm
+/results/**/*.nsys-rep
+/results/**/*.sqlite
+/results/**/*.ncu-rep
+/results/**/source_snapshot.tar.gz
 /results/profile_*/ncu_raw/
-/results/optimization_*/nsys_*.nsys-rep
-/results/optimization_*/nsys_*.sqlite
-/results/optimization_*/ncu/*.ncu-rep
+/tensor_core/build/
+/tensor_core/results/**/*.bin
+/tensor_core/results/**/*.qdstrm
+/tensor_core/results/**/*.nsys-rep
+/tensor_core/results/**/*.sqlite
+/tensor_core/results/**/*.ncu-rep
+/tensor_core/results/**/source_snapshot.tar.gz
+/tensor_core/results/**/validation/failures
+/tensor_core/results/**/validation/[0-9][0-9][0-9]_*.log

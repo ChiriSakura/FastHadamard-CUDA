@@ -12,15 +12,21 @@
 NVCC      ?= nvcc
 CUDA_ARCH ?= 86
 OUT       ?= build
+WARPS     ?= 4
+FUSED_WARPS ?= $(WARPS)
+QUANT_VECTOR ?= 0
 
 NVCCFLAGS := -O3 -std=c++17 \
              -gencode arch=compute_$(CUDA_ARCH),code=sm_$(CUDA_ARCH) \
-             -Iinclude
+             -Iinclude \
+             -DHADAMARD_WARPS_PER_BLOCK=$(WARPS) \
+             -DHADAMARD_FUSED_WARPS_PER_BLOCK=$(FUSED_WARPS) \
+             -DHADAMARD_QUANT_VECTOR_STORE=$(QUANT_VECTOR)
 
 BIN := $(OUT)/hadamard_bench
 ADV_BIN := $(OUT)/hadamard_advanced_bench
-OBJS := $(OUT)/hadamard.o $(OUT)/main.o
-ADV_OBJS := $(OUT)/hadamard.o $(OUT)/advanced_bench.o
+OBJS := $(OUT)/hadamard.o $(OUT)/hadamard_warp.o $(OUT)/main.o
+ADV_OBJS := $(OUT)/hadamard.o $(OUT)/hadamard_warp.o $(OUT)/advanced_bench.o
 
 .PHONY: all clean smoke run_sweep
 
@@ -30,6 +36,9 @@ $(OUT):
 	mkdir -p $(OUT)
 
 $(OUT)/hadamard.o: src/hadamard.cu include/hadamard.cuh include/cuda_check.cuh | $(OUT)
+	$(NVCC) $(NVCCFLAGS) -c $< -o $@
+
+$(OUT)/hadamard_warp.o: src/hadamard_warp.cu include/hadamard.cuh include/cuda_check.cuh | $(OUT)
 	$(NVCC) $(NVCCFLAGS) -c $< -o $@
 
 $(OUT)/main.o: src/main.cu src/reference_cpu.h include/hadamard.cuh include/cuda_check.cuh | $(OUT)

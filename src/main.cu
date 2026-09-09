@@ -253,7 +253,8 @@ static HostTensors load_input_bin(const Config& cfg, long long total_tokens) {
   t.native_input.resize(static_cast<size_t>(n));
   f.read(reinterpret_cast<char*>(t.native_input.data()),
          static_cast<std::streamsize>(n * sizeof(uint16_t)));
-  if (f.gcount() != static_cast<std::streamsize>(n * sizeof(uint16_t))) {
+  if (f.gcount() != static_cast<std::streamsize>(n * sizeof(uint16_t)) ||
+      f.peek() != std::char_traits<char>::eof()) {
     std::fprintf(stderr,
                  "[error] %s 大小与形状不符：期望 %lld 字节 (total_tokens=%lld, "
                  "head_dim=%d, dtype=%s)\n",

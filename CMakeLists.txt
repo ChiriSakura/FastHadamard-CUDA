@@ -22,19 +22,38 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 endif()
 
 option(HADAMARD_ENABLE_OPENMP "Enable OpenMP for CPU reference" OFF)
+set(HADAMARD_WARPS_PER_BLOCK 4 CACHE STRING "Warp block size: 0 adaptive, 2, 4, 8")
+set(HADAMARD_FUSED_WARPS_PER_BLOCK ${HADAMARD_WARPS_PER_BLOCK} CACHE STRING "INT4 warp block size: 0 adaptive, 2, 4, 8")
+set(HADAMARD_QUANT_VECTOR_STORE 0 CACHE STRING "INT4 wide store: 0 off, 1 all supported, 2 d1024 only")
+foreach(name HADAMARD_WARPS_PER_BLOCK HADAMARD_FUSED_WARPS_PER_BLOCK)
+  if(NOT "${${name}}" MATCHES "^(0|2|4|8)$")
+    message(FATAL_ERROR "${name} must be 0, 2, 4 or 8")
+  endif()
+endforeach()
+if(NOT "${HADAMARD_QUANT_VECTOR_STORE}" MATCHES "^[012]$")
+  message(FATAL_ERROR "HADAMARD_QUANT_VECTOR_STORE must be 0, 1 or 2")
+endif()
 
 add_executable(hadamard_bench
   src/main.cu
   src/hadamard.cu
+  src/hadamard_warp.cu
 )
 
 add_executable(hadamard_advanced_bench
   src/advanced_bench.cu
   src/hadamard.cu
+  src/hadamard_warp.cu
 )
 
 target_include_directories(hadamard_bench PRIVATE include)
 target_include_directories(hadamard_advanced_bench PRIVATE include)
+foreach(target hadamard_bench hadamard_advanced_bench)
+  target_compile_definitions(${target} PRIVATE
+    HADAMARD_WARPS_PER_BLOCK=${HADAMARD_WARPS_PER_BLOCK}
+    HADAMARD_FUSED_WARPS_PER_BLOCK=${HADAMARD_FUSED_WARPS_PER_BLOCK}
+    HADAMARD_QUANT_VECTOR_STORE=${HADAMARD_QUANT_VECTOR_STORE})
+endforeach()
 
 target_compile_options(hadamard_bench PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:-O3>
