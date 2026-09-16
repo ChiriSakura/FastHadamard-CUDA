@@ -8,14 +8,14 @@
 > 项目：2026 夏季训练营 CUDA 方向项目·选题三
 >
 > 当前阶段：Week1/Week2 baseline + 9.1 kernel 优化 + 9.2 融合 INT4
-> + warp-per-token 再优化 + Tensor Core 对比
+> + warp-per-token 再优化 + Tensor Core 对比 + MUSA 国产平台适配
 >
 > 最近实测：H200 A/B `17249309`、`17251073`；H100 参考库验收 `17251286`、
 > NCU 缓存策略对照 `17251063`，全部已完成。历史 L40S 主表来自
 > 2026-09-06 job `17083405`，不与本轮跨 GPU 混算。
 >
-> 报告状态：baseline、优化 FHT、融合量化、warp-per-token FHT 与 Tensor Core
-> 对比均已填写并附原始产物
+> 报告状态：baseline、优化 FHT、融合量化、warp-per-token FHT、Tensor Core 对比和
+> MUSA 国产平台适配均已填写并附可复现实验入口
 
 ## 1. 摘要
 
@@ -316,6 +316,54 @@ FP16/BF16。第 1 次 mma 直接使用原始输入，但不保证任意动态范
 `__shfl_xor_sync` 归约，无 shared memory、无 barrier。`d > 256` 时一个 token 跨
 多个 tile，该归约不成立，接口显式返回不支持并由调用方回落到非 TC 融合 kernel ——
 这是刻意的限制而不是未实现。
+
+## 4.8 国产平台适配：Moore Threads MUSA
+
+为验证项目能在国产 GPU 平台落地，新增 [`musa/`](../musa/README.md) 子目录，
+目标平台为 Moore Threads S4000，toolkit 为 MUSA 5.1.0。该适配不改变 CUDA 主工程
+的默认构建，使用 MUSA 的 CUDA 兼容 runtime、FP16/BF16 类型和 `mcc` 编译器；
+`musa_compat.h` 只负责 runtime 名称映射，Hadamard 数学、张量布局和 CPU 参考逻辑
+保持一致。
+
+适配覆盖以下路径：
+
+- shared-memory FP32 butterfly baseline；
+- `half2`/`bfloat162`、warp shuffle 和多 token/block optimized FHT；
+- warp-per-token FHT 及其融合 INT4 路径；
+- 非融合 INT4 与 fused Hadamard+INT4；
+- FP16/BF16 和 `head_dim=32/64/128/256/512/1024` 的静态分发。
+
+MUSA 侧验证命令如下：
+
+```bash
+cd musa
+source env.sh
+make -j2
+make smoke
+./build/hadamard_bench --batch 1 --seq 8 --heads 2 --head_dim 128 \
+   --dtype bf16 --normalize true --warmup 1 --iters 3 --check true
+./build/hadamard_advanced_bench --batch 1 --seq 16 --heads 2 --head_dim 128 \
+   --dtype bf16 --normalize true --warmup 1 --iters 3 \
+   --profile true --csv results/musa_validation.csv
+```
+
+S4000 实测结果：BF16 `head_dim=128` 的 `max_abs_error=7.76e-3`，低于题目要求的
+`5e-2`；FP16 同尺寸实测也通过 `1e-2` 阈值。高级基准同时报告三项检查：
+optimized 与 baseline bit-exact、fused INT4 与先变换后量化 bit-exact，以及
+GPU/CPU INT4 scale 和反量化误差在容差内。BF16、`head_dim=128`、32 tokens 的一次
+实测中，optimized 相对 baseline 为 `1.01x`，fused INT4 相对 unfused 为 `1.08x`，
+INT4 压缩率为 `3.765x`；更大规模的 FP16 d=64 和 BF16 d=256 测试中 fused 加速约
+`1.10x`，结果均通过上述一致性检查。
+
+MUSA runtime 提供 `musaProfilerStart/Stop`，高级基准的 `--profile true` 已用该
+API 包围 warmup 后的四组 CUDA Event 计时。当前验证节点未安装独立的 MUSA 硬件计数器
+命令行工具（如 `msprof`），因此本节只报告实际采集到的 kernel 时间和 CSV，不虚构
+SM occupancy、DRAM throughput 或 stall counter。拿到匹配版本的 profiler 后，可在
+同一命令上直接复用该采集边界。
+
+该适配的边界也需要明确：MUSA 版本当前覆盖 FP16/BF16 和 INT4，不包含 FP8；没有把
+NVIDIA WMMA/Tensor Core 分支强行移植到 MUSA，MUSA 性能结论不与 CUDA H200/L40S
+数字混合比较。完整源代码、构建入口和 CSV 证据均位于 [`musa/`](../musa/)。
 
 ## 5. 正确性验证
 
@@ -1018,7 +1066,7 @@ sbatch tensor_core/slurm/tc_ncu_h200.slurm
 | Tensor Core 融合量化 | 已完成（d<=256） | 与同算法 unfused 逐位一致；d>256 显式回落 |
 | Tensor Core vs 非 TC 对比（进阶项） | 已完成 | 历史 L40S d=64 TC 占优；本轮 H200 核心维度 warp 变换仍更快 |
 | warp/TC 的 ncu 硬件计数器 | 已完成（H200） | warp 的 barrier stall 为 0；TC 的主导 stall 是 short scoreboard / mio throttle |
-| 国产平台适配 | 未开始 | 当前仅 NVIDIA CUDA / SM 8.0、8.6、8.9、9.0；Tensor Core 分支要求 SM >= 80 |
+| 国产平台适配 | 已完成（MUSA/S4000） | `musa/` 子目录；FP16/BF16 正确性、INT4 融合一致性和性能 CSV 已实测；外部硬件 profiler 待工具安装 |
 
 ## 12. 参考资料
 

@@ -2,7 +2,7 @@
 
 入口：[总结报告](docs/final_report.md) · [最新补测](docs/gap_closure.md) ·
 [实验数据索引](tensor_core/results/README.md) · [Slurm 脚本说明](tensor_core/slurm/README.md) ·
-[目录整理与归档](docs/repository_cleanup.md)
+[目录整理与归档](docs/repository_cleanup.md) · [MUSA 国产平台适配](musa/README.md)
 
 本目录实现输入形状 `[batch_size, seq_len, num_heads, head_dim]` 最后一维上的
 快速 Walsh-Hadamard Transform。实现支持 FP16、BF16，核心维度为 64/128/256，
@@ -75,6 +75,25 @@ make -C tensor_core CUDA_ARCH=89 -j4
 ```bash
 cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=86
 cmake --build build -j
+```
+
+MUSA 国产平台适配位于 [`musa/`](musa/README.md)，使用 MUSA 5.1.0 的 `mcc` 和
+独立 CMake language module 构建，不改变本目录的 CUDA 默认构建。进入子目录后：
+
+```bash
+cd musa
+source env.sh
+make -j2
+make smoke
+```
+
+高级 MUSA 验证会检查 baseline/optimized bit-exact、融合 INT4 与非融合路径
+bit-exact、GPU/CPU 量化结果的容差，并输出 CSV 性能日志：
+
+```bash
+./build/hadamard_advanced_bench --batch 1 --seq 128 --heads 8 \
+  --head_dim 256 --dtype bf16 --warmup 20 --iters 100 \
+  --csv results/musa_advanced.csv --profile true
 ```
 
 ## 验证
@@ -263,6 +282,7 @@ FastHadamard-CUDA/
 │   ├── hadamard.cu          # baseline + 9.1 optimized + 9.2 fused INT4
 │   └── hadamard_warp.cu     # warp-per-token FHT（零 shared / 零 barrier）
 ├── tensor_core/             # Tensor Core (WMMA) 实验分支与对照基准
+├── musa/                    # Moore Threads MUSA 国产平台适配与验证
 ├── tests/                   # 官方库对照与 dump 检查
 ├── scripts/                 # 一键测试和 profiler 入口
 ├── slurm/                   # 集群工具探测与完整 profiler 任务
@@ -273,7 +293,8 @@ FastHadamard-CUDA/
 ## 当前范围
 
 Week1/Week2 baseline、9.1 kernel 优化、9.2 对称 INT4 融合量化、warp-per-token
-再优化和 Tensor Core 对比均已实现和实测。FP8 输出与国产平台适配仍未实现；
+再优化和 Tensor Core 对比均已实现和实测；MUSA 国产平台适配已并入 `musa/` 并在
+S4000 上完成构建、正确性和性能回归。FP8 输出仍未实现；
 Tensor Core 分支要求 SM >= 80（BF16 WMMA），且其融合 INT4 仅支持
 `head_dim <= 256`（`head_dim > 256` 时显式回落到非 TC 融合 kernel）。
 边界、实验解释和后续路线见 [`docs/final_report.md`](docs/final_report.md)。
