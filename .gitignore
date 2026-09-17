@@ -4,6 +4,7 @@
 # 构建与 Python 缓存
 /build/
 /musa/build/
+/muxi/build/
 __pycache__/
 *.pyc
 

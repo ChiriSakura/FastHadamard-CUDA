@@ -8,14 +8,14 @@
 > 项目：2026 夏季训练营 CUDA 方向项目·选题三
 >
 > 当前阶段：Week1/Week2 baseline + 9.1 kernel 优化 + 9.2 融合 INT4
-> + warp-per-token 再优化 + Tensor Core 对比 + MUSA 国产平台适配
+> + warp-per-token 再优化 + Tensor Core 对比 + MUSA/MACA 国产平台适配
 >
 > 最近实测：H200 A/B `17249309`、`17251073`；H100 参考库验收 `17251286`、
 > NCU 缓存策略对照 `17251063`，全部已完成。历史 L40S 主表来自
 > 2026-09-06 job `17083405`，不与本轮跨 GPU 混算。
 >
 > 报告状态：baseline、优化 FHT、融合量化、warp-per-token FHT、Tensor Core 对比和
-> MUSA 国产平台适配均已填写并附可复现实验入口
+> MUSA/MACA 国产平台适配均已填写并附可复现实验入口
 
 ## 1. 摘要
 
@@ -364,6 +364,42 @@ SM occupancy、DRAM throughput 或 stall counter。拿到匹配版本的 profile
 该适配的边界也需要明确：MUSA 版本当前覆盖 FP16/BF16 和 INT4，不包含 FP8；没有把
 NVIDIA WMMA/Tensor Core 分支强行移植到 MUSA，MUSA 性能结论不与 CUDA H200/L40S
 数字混合比较。完整源代码、构建入口和 CSV 证据均位于 [`musa/`](../musa/)。
+
+## 4.9 国产平台适配：沐曦 MACA
+
+在 MUSA 适配之外，新增 [`muxi/`](../muxi/README.md) 子目录，面向沐曦 MACA
+工具链。当前验证环境为 MACA 3.5.3，编译器为 `mxcc`，GPU 为 MetaX C500。
+该适配保持 CUDA 风格 `.cu` 源码和 CUDA 兼容 API，通过 MACA 的
+`tools/cu-bridge/include` 提供 `cuda_runtime.h`、`cuda_fp16.h` 和 `cuda_bf16.h`，
+并在链接阶段显式使用 `libruntime_cu.so`。CUDA 主工程和 `musa/` 目录不受影响。
+
+构建入口如下：
+
+```bash
+cd muxi
+source env.sh
+make -j2
+make smoke
+```
+
+`muxi/Makefile` 默认使用 `/opt/maca-3.5.3/mxgpu_llvm/bin/mxcc`，也支持通过
+`MUXI_HOME`、`MXCC`、`MUXI_ARCH` 和 `MUXI_EXTRA_FLAGS` 覆盖 SDK 路径、编译器和
+目标架构。适配过程中修正了从 MUSA 模板带入的 `musa_runtime.h`，改为 MACA 提供的
+CUDA 兼容运行时头；随后补充 `libruntime_cu.so`，解决 `wcuda*` 运行时符号链接问题。
+
+MetaX C500 小规模实测结果如下：
+
+| 程序 | 配置 | 结果 |
+|---|---|---|
+| `hadamard_bench` | FP16，batch=1，seq=8，heads=2，d=64 | `max_abs_error=9.44e-4`，低于 `1e-2`，PASS |
+| `hadamard_advanced_bench` | FP16，batch=1，seq=8，heads=2，d=64 | optimized/baseline、fused/unfused、GPU/CPU quant 均 BIT-EXACT |
+| `hadamard_advanced_bench` | 同上 | baseline `0.030891 ms`，optimized `0.023893 ms`，`1.29x` |
+| `hadamard_advanced_bench` | 同上 | fused INT4 `0.024661 ms`，压缩率 `3.556x` |
+
+以上为单个小规模配置，用于确认平台兼容性和实现语义，不与 CUDA H200/L40S 的大规模
+性能数字混合比较。当前适配覆盖 FP16/BF16 头文件路径、Hadamard baseline/optimized、
+warp-per-token、融合 INT4 以及两个 benchmark；FP8 和 NVIDIA 专有 WMMA 分支未强行
+移植。完整源码、环境脚本和构建说明均位于 [`muxi/`](../muxi/)。
 
 ## 5. 正确性验证
 
