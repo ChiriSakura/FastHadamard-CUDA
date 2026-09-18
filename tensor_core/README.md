@@ -1,27 +1,27 @@
 # Tensor Core Hadamard 变换（选题三·进阶项）
 
-> 2026-09-08 修订：历史相对误差通过不计为 PDF 验收；当前 benchmark 提供
-> `--input_bin`、`--reference_bin`、`--dump_dir`，按全张量绝对误差检查。
-> `validate_tc.py` 区分参考库和独立 CPU 参考。新调优及验收状态见
-> [审计与优化记录](../docs/audit_optimization.md)。
-
-2026-09-09 已完成两轮调优与真实参考库验收。H200 可选组合
-`make -C tensor_core h200-tuned`：d=64 warp 1.54×，d=128 TC fast/split
-1.29×/1.43×，d=256 split 1.47×（相对各自原配置）。TC 严格库验收仍分别为
-96/132、121/132，不能作为普遍合规替代；warp 为 132/132、误差 0。
-新增 75 项 sanitizer 无错误、40 次 H100 NCU 成功，详见
-[最终表格与 Roofline](results/verify_17251073/final_library/summary.md)。
-
-后续四阶段实验见 [新优化记录](../docs/next_optimization.md)。已增加参考库性能基线、
-warp/INT4 独立参数、TC 中间值精度探针，以及 `mma-experiment` 独立构建目标。
-显式 PTX C→B 寄存器重排不用 shared memory；L40S d=64 FP16 fast/split 相对
-向量化 WMMA 快 1.30×/1.41×，但 108 配置严格验收仍是 84/108、101/108，
-不能将速度提升误写成数值问题已解决。该实验没有接入默认路径或 TC 融合量化。
-
-Hopper 后续补测见 [缺口补测报告](../docs/gap_closure.md)：新增30项H200 NCU与
-实测Roofline、三次独立宽写回复测。`QUANT_VECTOR=2` 仅优化D1024，实测再快约6%。
-`MMA_PRECISION=2` 三段残差为107/108；`MMA_PRECISION=3` 保护式 **split** 达到
-108/108并通过192项压力测试，但慢于warp，保持非默认。该开关不保护fast模式。
+> **当前状态摘要。** 完整口径、验收方法与全部实验记录见
+> [项目技术报告](../docs/final_report.md)；本文件只讲 Tensor Core 分支自身的
+> 算法、构建与结果。
+>
+> - **严格验收**：参考为 Dao v1.1.0 全张量低精度输出，固定绝对误差
+>   （FP16 `<0.01`、BF16 `<0.05`）。132 配置矩阵下 `warp` 为 132/132、误差 0；
+>   `tc_fast` 为 96/132、`tc_split` 为 121/132 —— **TC 不能作为普遍合规的替代**。
+>   历史的相对误差通过（`PASS(rel)`）不计为验收。
+> - **可选调优组合**：`make -C tensor_core h200-tuned`。H200 上相对**各自原配置**，
+>   d=64 warp 1.54×，d=128 TC fast/split 1.29×/1.43×，d=256 split 1.47×。
+>   这不是对 warp 的加速：d=128 的 warp 仍快于两条 TC 路径。
+> - **显式 PTX**（`make -C tensor_core mma-experiment`）：C→B 寄存器重排不经
+>   shared memory，L40S d=64 FP16 fast/split 相对向量化 WMMA 快 1.30×/1.41×，
+>   但 108 配置严格验收仍是 84/108、101/108。**速度提升不等于数值问题已解决**；
+>   该实验未接入默认路径，也没有 TC 融合量化。
+> - **精度实验**：`MMA_PRECISION=2` 三段残差为 107/108；`MMA_PRECISION=3`
+>   保护式 **split** 达到 108/108 并通过 192 项压力测试，**但慢于 warp**，
+>   因此保持非默认。该开关不保护 fast 模式。
+> - **benchmark 接口**：提供 `--input_bin`、`--reference_bin`、`--dump_dir`；
+>   `validate_tc.py` 明确区分参考库与独立 CPU 参考。
+>
+> [最终表格与 Roofline](results/verify_17251073/final_library/summary.md)
 
 本目录是主项目 [`FastHadamard-CUDA`](../README.md) 的 Tensor Core 实验分支，对应
 项目文档 “选题三 · Hadamard 变换加速” 中的两条要求：
