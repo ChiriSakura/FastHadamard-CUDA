@@ -1,6 +1,6 @@
 // warp-per-token 快速 Walsh-Hadamard 变换（optimized kernel 的下一级优化）
 //
-// 动机（来自 9.1 版本的 profile 结论）：
+// 动机：
 //   优化版 kernel 每个线程只持有 2 个元素，因此 head_dim=128/256 时仍有
 //   1~2 轮跨 warp 的 shared-memory 交换 + 2~4 次 __syncthreads()，并且跨 warp
 //   阶段用 `if (partner > local_pair)` 只让一半线程干活。d=256 因此只拿到约

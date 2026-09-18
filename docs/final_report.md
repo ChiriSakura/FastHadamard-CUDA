@@ -1,100 +1,7 @@
 # Hadamard 变换加速项目总结报告
 
 > 项目：2026 夏季训练营 CUDA 方向项目·选题三
->
-> 本报告是项目的唯一技术正文。此前按时间分册的《审计与优化记录》《下一轮优化》
-> 《Hopper 缺口补测》已按主题并入本文，原有数据、判据和失败记录一并保留，
-> 未作修改或美化。仓库整理与归档的执行记录另见
-> [目录整理与归档](repository_cleanup.md)。
 
-## 0. 阅读本报告的口径约定
-
-本项目横跨五种 GPU、三套计时方法和两类数值参考。**绝大多数误读来自把口径不同的
-数字放在一起比较**，因此先把约定集中在此，正文不再逐处重复。
-
-### 0.1 状态词的定义
-
-报告严格区分四种状态，它们不能相互替代：
-
-| 状态 | 含义 |
-|---|---|
-| 已实现 | 代码存在并能编译 |
-| 已测试 | 在目标硬件上跑通并产出记录 |
-| 严格验收通过 | 在 §0.3 判据下逐配置通过，失败数为 0 |
-| 已确认收益 | 同后端、同硬件、多次重复测量的中位数显示稳定加速 |
-
-编译通过不等于测试通过，测试跑完不等于验收通过，单次变快不等于确认收益。
-Slurm 作业标记 `COMPLETED` 只表示流程执行完毕，不表示其中各项检查都通过。
-
-### 0.2 三种计时口径，互不混算
-
-| 口径 | 含义 | 用途 |
-|---|---|---|
-| **CUDA Event（无 profiler）** | 同一 stream 上包围 kernel 的 Event 计时，预热后重复测量 | 正式性能数字 |
-| **CUDA Graph 回放摊销** | 捕获 16 次调用为 Graph，回放 10 次后按节点摊销 | 与外部参考库的同边界对照 |
-| **NCU duration** | Nsight Compute 单 kernel replay 报告的时间 | 仅用于 profiler 内部结构对比 |
-
-NCU 会串行化 kernel 并引入采集开销，其绝对值不能替代无 profiler 计时；Graph 摊销
-消除了 Python/ctypes 的调用开销差异，也不等于端到端 API 延迟。三者在正文中始终
-标注来源，不跨口径计算加速比。
-
-### 0.3 数值验收判据
-
-题目规定**固定绝对误差**：FP16 `< 0.01`，BF16 `< 0.05`。本项目的正式判据是：
-
-- 参考为 **Dao-AILab `fast_hadamard_transform` v1.1.0 的全张量低精度输出**，
-  输入、dtype、归一化 scale 与被测实现完全相同；
-- 在 FP32 域比较**全部元素**的绝对误差，不采样；
-- `NaN`/`Inf` 不会因 `std::max` 忽略异常而通过。
-
-以下三种量**仅作诊断，不参与通过判定**，历史上曾被误用为验收依据，现已撤回：
-
-1. **相对误差** —— 题目要求的是绝对误差，换成相对误差等于放宽阈值；
-2. **FP64 参考** —— 与未舍入高精度参考比较时，误差里含有输出格式自身的舍入，
-   与低精度参考库比较时两者却可以完全同值。二者不是同一件事。并且实测表明
-   参考库本身也不总是"FP64 精确值再舍入"（§5.6），所以 FP64 不能反过来当作
-   更宽松的验收基准；
-3. **token-peak ULP** —— 以"该 token 峰值处输出 dtype 的 ULP"为单位，不是每个
-   元素自己的 ULP，因此 `max_ulp <= 0.5` **不能**证明正确舍入。
-
-未提供外部参考时，运行仅作 optimized 回归，CSV 中 `pdf_verified=0`。
-
-### 0.4 三类互补的一致性检查
-
-以下三条检查目的不同，任何一条都不能替代另外两条：
-
-1. **对外部参考库的绝对误差** —— 回答"是否满足题目精度要求"；
-2. **与已验收路径的逐位一致率** —— 回答"新实现是否严格等价于已验收的实现"；
-3. **融合与非融合的逐位比较** —— 回答"融合是否改变了结果"。第 3 条**必须按算法
-   配对**：`fused_tc_fast` 只能与 `tc_fast` 比较。若拿它与 warp 路径的
-   "先变换后量化"比较，比的是两种算法之间的数值差异，而不是融合本身是否正确。
-
-此外，`bit-exact` 用于验证实现语义，`MAE`/`RMSE` 用于描述 INT4 本身的有损误差，
-两者互不替代。
-
-### 0.5 硬件与跨 GPU 规则
-
-| 用途 | 硬件 |
-|---|---|
-| 历史 baseline | RTX 3060 Laptop（SM 8.6） |
-| 端到端 A/B 主表 | L40S（SM 8.9） |
-| 参数调优、参考库对照、PTX 计时 | H200（SM 9.0） |
-| 缓存策略 NCU 与 Roofline | H100 SXM（SM 9.0） |
-| 国产平台 | Moore Threads S4000、MetaX C500、Iluvatar MR-V100 |
-
-**跨 GPU 的数字不混算**，每张表都标注硬件与作业号。同理，Roofline 的 roof 必须
-用该次采集所在硬件的规格：H200 SXM 为 4.8 TB/s / FP32 67 TFLOP/s，H100 SXM 为
-3.35 TB/s / FP32 67 TFLOP/s，L40S 为 864 GB/s / FP32 91.61 TFLOP/s。
-
-### 0.6 Roofline 与吞吐的计算方式
-
-- 纵轴统一按 FHT 的**有用**加减次数 `tokens × d × log2(d)` 计算，不把 Tensor Core
-  的冗余稠密乘加计入收益；
-- 横轴优先使用 NCU 实测 DRAM 字节；不可用时明确标注为"逻辑最小 I/O"
-  （一次 16-bit 读 + 一次 16-bit 写），不冒充实测流量；
-- FP32 compute roof 是**非 Tensor Core 的参考上限**，不表示 Tensor Core 峰值利用率；
-- 缓存命中时按逻辑 I/O 算出的"有效带宽"可以超过 HBM 理论值，这是 L2 复用，
-  不是超越物理带宽。
 
 ## 1. 摘要
 
@@ -172,8 +79,8 @@ NCU 时间从 6.304 降到 4.992 μs。PTX 与对应 WMMA 的输出逐位一致 
 | Roofline | 已完成（口径分列） | 历史 L40S 逻辑 I/O；H100/H200 实测 DRAM |
 | 与外部参考库的性能对照 | 已完成 | H200 80 配置、2800 条 Graph 摊销计时 |
 | 国产平台适配 | 已完成（三平台） | MUSA / MACA / CoreX 均实测通过 |
-| FP8 输出 | **未实现** | 见 §11 |
-| 模型端到端集成 | **未实现** | 当前为算子级合成输入，见 §11 |
+| FP8 输出 | **未实现** | 见 §10.4 |
+| 模型端到端集成 | **未实现** | 当前为算子级合成输入，见 §10.4 |
 
 ## 2. 背景与目标
 
@@ -181,7 +88,7 @@ NCU 时间从 6.304 降到 4.992 μs。PTX 与对应 WMMA 的输出逐位一致 
 能量扩散到多个通道，可降低单通道动态范围，同时保持全精度网络的等价性。QuaRot
 展示了旋转后端到端 4 bit 权重、激活和 KV cache 量化；SpinQuant 进一步学习旋转矩阵；
 FlashAttention-3 则将 incoherent processing 与 FP8 block quantization 用于 Hopper
-注意力计算。相关一手资料见 §14。
+注意力计算。相关一手资料见附录 C。
 
 项目目标不是只追求单次最快数字，而是建立可验证、可复现的优化闭环：
 
@@ -190,7 +97,7 @@ FlashAttention-3 则将 incoherent processing 与 FP8 block quantization 用于 
 3. 建立可复现的正确性矩阵、CUDA Event 性能日志和 profiler 入口；
 4. 用 profiler 数据驱动 shuffle / vectorized / multi-token 优化；
 5. 固定量化协议并验证 fused 与 unfused bit-exact；
-6. 在 Tensor Core 上**换算法**（而不是换后端）实现同一变换，并与做到位的非
+6. 在 Tensor Core 上**换算法**实现同一变换，并与做到位的非
    Tensor Core 实现在同环境下对比误差、单 kernel 时间和融合后的端到端时间。
 
 ## 3. 数学定义与算法
@@ -218,7 +125,7 @@ stride = 1, 2, 4, ..., d/2
 
 因此每个 token 的计算复杂度降为 `O(d log d)`，额外存储为 `O(d)`。
 
-## 4. 实现
+## 4. 基础实现
 
 ### 4.1 工程结构
 
@@ -232,7 +139,7 @@ stride = 1, 2, 4, ..., d/2
 | `src/advanced_bench.cu` | 9.1/9.2 A/B 计时、CPU INT4 reference 与 bit-exact 检查 |
 | `src/reference_cpu.h` | 开发期 FP32 自检 |
 | `tensor_core/` | WMMA / PTX / 精度诊断实验分支，详见 [`tensor_core/README.md`](../tensor_core/README.md) |
-| `musa/`、`muxi/`、`tianshu/` | 三个国产平台的适配入口（§8） |
+| `musa/`、`muxi/`、`tianshu/` | 三个国产平台的适配入口（§10.1） |
 | `tests/` | CPU 工具测试与 GPU 参考库验收入口 |
 | `scripts/`、`slurm/` | 一键测试、profiler 采集与集群作业模板 |
 
@@ -270,7 +177,12 @@ FP32 中间计算是 BF16 达到误差要求的关键。若直接以 BF16 逐轮
 而不是相对一个做到位的实现 —— 这也是本报告在比较 Tensor Core 时坚持与
 warp-per-token（而不是 baseline）对照的原因。
 
-### 4.4 9.1 optimized FHT
+## 5. 优化设计
+
+本章沿着“减少同步、提高访存宽度、消除中间写回”三条主线，从optimized
+逐步推进到 warp-per-token、融合 INT4 与 Tensor Core / PTX 实验路径。
+
+### 5.1 optimized FHT
 
 每个线程负责相邻两个元素，使用 `half2` / `__nv_bfloat162` 做 32-bit 合并
 load/store。stride=1 的加减留在同一线程的两个 FP32 寄存器中；stride=2–32 通过
@@ -278,7 +190,7 @@ load/store。stride=1 的加减留在同一线程的两个 FP32 寄存器中；s
 只有 stride ≥ 64 的跨 warp 阶段才使用 shared memory。d=64 每 block 处理 4 tokens，
 d=128 每 block 处理 2 tokens，减少 block 数并提高每个 block 的有效工作量。
 
-### 4.5 9.2 fused INT4
+### 5.2 fused INT4
 
 量化协议固定为逐 token 对称 INT4：
 
@@ -300,9 +212,9 @@ max/scale/INT4，避免中间张量的写回和重读。
 完成最终 token max 和 scale，最后所有线程并行舍入、饱和并打包。fused kernel 采用
 每 block 一个 token，因为 scale 依赖整个 token。
 
-### 4.6 warp-per-token FHT
+### 5.3 warp-per-token FHT
 
-9.1 的结构性瓶颈来自"每线程只持 2 个元素"：一个 token 需要 `d/2` 个线程，
+结构性瓶颈来自"每线程只持 2 个元素"：一个 token 需要 `d/2` 个线程，
 所以 d=128/256 时 token 跨多个 warp，stride ≥ 64 的蝶形必须走 shared memory +
 `__syncthreads()`，而且那些阶段用 `if (partner > local_pair)` 只让一半线程干活。
 d=256 因此只拿到约 1.25× 加速。
@@ -318,7 +230,7 @@ token**：
 - global 访问宽度提升到 `ELEMS × 2` 字节：d=64 为 32-bit、d=128 为 64-bit、
   d=256 及以上为 128-bit（多个 `int4` chunk）。
 
-融合 INT4 版本受益更大。9.2 的融合 kernel 是 block-per-token，per-token max 需要
+融合 INT4 版本受益更大。融合 kernel 是 block-per-token，per-token max 需要
 一次 warp shuffle + shared memory 跨 warp 归约 + 两次 `__syncthreads()`；
 warp-per-token 之下一个 warp 就是一个 token，per-token max 退化成纯 warp
 `__shfl_xor_sync` 归约，**shared memory 和 barrier 全部消失**，写回也从每线程
@@ -326,14 +238,13 @@ warp-per-token 之下一个 warp 就是一个 token，per-token max 退化成纯
 
 限制是 `head_dim >= 64`（否则一个 warp 装不下 2 元素/线程），d=32 仍走 9.1 路径。
 
-### 4.7 Tensor Core 路径（WMMA）
+### 5.4 Tensor Core 路径（WMMA）
 
-**先说不该做的事**：把 Hadamard 写成稠密 `H_d @ x` 交给 Tensor Core 是错的。
+**分析**：把 Hadamard 写成稠密 `H_d @ x` 交给 Tensor Core 是错的。
 FHT 是 `O(d log d)`，稠密 GEMM 是 `O(d^2)`；d=256 时每 token 的算术量从 2048 次
 加减涨到 65536 次乘加，涨 32 倍，而 Tensor Core 相对 FP32 SIMT 的峰值优势只有
 一个量级左右，且 FHT 本身访存受限（逻辑算术强度仅 1.5–2.0 FLOP/B）。所以
-Tensor Core 版本必须**换算法**，而不是换后端。题目 Note 里"实现算法不一定相同"
-说的正是这件事。
+Tensor Core 版本必须**换算法**，而不是换后端。
 
 本实现用 Sylvester 矩阵的 Kronecker 递归，取 `b = 16`（正好是 WMMA `m16n16k16`
 的形状）：
@@ -386,7 +297,7 @@ FP16/BF16。第 1 次 mma 直接使用原始输入，不保证任意动态范围
 
 `tc_split` 把 `A @ P` 拆成 `A @ P_hi + A @ P_lo` 累加到同一个 FP32 accumulator。
 `A` 的元素只有 `0, ±1`，残差项能显著减小中间误差，**但这不保证与 FP32 FHT 逐位
-一致**，严格验收结果见 §5.4。
+一致**，严格验收结果见 §6.4。
 
 **融合 INT4 侧**：每个 lane 固定负责 8 个连续元素，因此 `d <= 256` 时一个 token
 恰好由连续的 `d/8` 个 lane 覆盖，per-token max 就是一次宽度为 `d/8` 的 sub-warp
@@ -399,11 +310,10 @@ kernel —— 这是刻意的限制而不是未实现。
 `tokens=1` 不启动零大小 TC grid。纯变换使用同样的分区，因此同算法融合比较覆盖
 混合执行路径。
 
-### 4.8 显式 PTX `mma.sync` 实验分支
+### 5.5 显式 PTX `mma.sync` 实验分支
 
-§4.7 的实现瓶颈在于：WMMA 的 accumulator fragment 与 matrix_b fragment 内部布局
-不同，第 1 次 mma 的结果**必须经 shared memory 中转**才能喂给第 2 次。硬件证据
-见 §7.5。绕开它需要直接控制 fragment 布局，这是 `tensor_core/src/hadamard_mma_experimental.cu`
+§5.4 的实现瓶颈在于：WMMA 的 accumulator fragment 与 matrix_b fragment 内部布局
+不同，第 1 次 mma 的结果**必须经 shared memory 中转**才能喂给第 2 次。绕开它需要直接控制 fragment 布局，这是 `tensor_core/src/hadamard_mma_experimental.cu`
 的目的。
 
 先澄清三个常被混淆的概念：**Tensor Core 是计算硬件，WMMA 是使用它的 CUDA 编程
@@ -424,9 +334,9 @@ kernel —— 这是刻意的限制而不是未实现。
 
 该分支是独立编译单元，**不接入生产 API 的默认分发**。它与对应 WMMA 路径在 108 个
 核心配置上输出哈希差异为 0 —— 这既说明重排没有改变数值，也说明它**继承了原算法
-的全部精度失败**（§5.4）。
+的全部精度失败**（§6.4）。
 
-### 4.9 编译期可选参数
+### 5.6 编译期可选参数
 
 所有优化候选都以编译参数形式提供，**默认值一律保持原有行为**，不因某次 A/B 的
 最快结果而自动切换。Make 与 CMake 提供等价选项：
@@ -458,7 +368,7 @@ kernel —— 这是刻意的限制而不是未实现。
 必须明确：`MMA_PRECISION=3` 是 **"TC + warp 回退"**，不是纯 TC 的精度修复。其
 误差包络是需要压力测试验证的保守构造，不声称对任意有限位模式的形式化证明。
 
-**采用与拒绝的候选**（依据见 §6.4、§6.7）：
+**采用与拒绝的候选**（依据见 §8.4、§8.7）：
 
 | 候选 | 决定 | 理由 |
 |---|---|---|
@@ -480,11 +390,11 @@ make -C tensor_core h200-tuned
 make CUDA_ARCH=90 WARPS=0 QUANT_VECTOR=2 OUT=build/h200-selective
 ```
 
-## 5. 正确性验证
+## 6. 正确性验证
 
-判据与口径见 §0.3、§0.4，本节只给方法与结果。
+判据与口径见 §7.3、§7.4，本节只给方法与结果。
 
-### 5.1 验收流程
+### 6.1 验收流程
 
 每个配置由 C++ bench 生成目标低精度输入，运行本项目 kernel 并 dump 原始
 输入/输出；Python 将输入严格 reshape 为 `[-1, head_dim]`，再调用参考库。双方使用
@@ -497,7 +407,7 @@ make CUDA_ARCH=90 WARPS=0 QUANT_VECTOR=2 OUT=build/h200-selective
 Python 再读回所有输出，独立复核 C++ 的误差值、通过判据和校验元素数，并保存失败
 输入以便复现。
 
-### 5.2 测试矩阵
+### 6.2 测试矩阵
 
 项目先后使用过三个规模不同的矩阵，报告中引用时均注明分母，**不同分母不能混用**：
 
@@ -515,7 +425,7 @@ TC 融合只统计其支持的 d=64/128/256，分母为 108；纯变换覆盖 d=
 非归一化配置 + 1 个尾部配置），且旧尾部用例**跳过了** TC 融合。该次
 `sweep_exit_code=0` 包含相对误差放宽，**不能**作为严格验收通过的证据。
 
-### 5.3 非 Tensor Core 路径：全部通过
+### 6.3 非 Tensor Core 路径：全部通过
 
 严格 132 配置矩阵，两套参考独立执行且结论一致：
 
@@ -531,7 +441,7 @@ TC 融合只统计其支持的 d=64/128/256，分母为 108；纯变换覆盖 d=
 原 baseline 在历史 36 配置矩阵上同样 36/36 通过，`max_abs_error=0`、逐位一致率
 100%，逐配置记录见 [`results/library_check.csv`](../results/library_check.csv)。
 
-### 5.4 Tensor Core 路径：保留的失败
+### 6.4 Tensor Core 路径：保留的失败
 
 同一严格矩阵、同样两套参考下：
 
@@ -555,10 +465,10 @@ FP16 d=128 的 split 绝对误差为 0.015625（阈值 0.01）；BF16 d=64 为 0
 **结论是"默认非 TC 路径在本矩阵通过，TC 实现有性能收益但严格数值覆盖不足"，
 不是"全部 kernel 合格"。**
 
-### 5.5 融合与非融合的一致性
+### 6.5 融合与非融合的一致性
 
 `hadamard_advanced_bench` 与 `tc_bench` 对每条融合路径执行三类逐位验证（口径见
-§0.4）：
+§7.4）：
 
 1. optimized FHT 与保留的 baseline 低精度输出完全一致；
 2. fused INT4 的 packed bytes 和 FP32 scales 与**同算法** unfused pipeline 完全一致；
@@ -575,10 +485,10 @@ L40S 上 6 个核心性能配置全部 PASS；进一步覆盖 FP16/BF16、normal
 d=32/64/128/256/512/1024 的 24 个小规模配置也全部通过三项检查。CPU reference 另外
 计算反量化误差：normal 输入下 MAE 为 0.0912–0.1084，RMSE 为 0.1075–0.1263。
 
-注意 §5.4 的 TC 变换精度失败与本节的融合一致性通过**不矛盾**：融合检查回答的是
+注意 §6.4 的 TC 变换精度失败与本节的融合一致性通过**不矛盾**：融合检查回答的是
 "融合是否改变了该算法自己的结果"，它不能替代变换本身的精度验收。
 
-### 5.6 `tc_split` 精度的逐阶段定位
+### 6.6 `tc_split` 精度的逐阶段定位
 
 作业 `17290602`（H200 `gh119`，23 秒）读取旧严格验收中 split 的 11 个失败输入，
 新增**仅诊断用**编译单元，记录真实 GPU 第一次 MMA 输出 `P` 和最终 native 转换前的
@@ -611,13 +521,13 @@ TC tile 的错误归因。
 
 **更重要的发现：参考库本身也不总是"FP64 精确值再舍入"。** FP16 d=1024 的该用例中，
 两者最大差异为 0.0625。因此不能简单把 TC 换成"更精确"的算法就声称满足与参考库的
-固定绝对误差要求，更不能反过来用 FP64 作为宽松的验收依据（§0.3 第 2 条）。
+固定绝对误差要求，更不能反过来用 FP64 作为宽松的验收依据（§7.3）。
 
 本轮**没有**宣布 11 个失败已修复。
 
-### 5.7 提高精度的三次尝试与其代价
+### 6.7 提高精度的三次尝试与其代价
 
-`MMA_PRECISION` 的四个取值（定义见 §4.9）在核心 108 配置矩阵上的结果，
+`MMA_PRECISION` 的四个取值（定义见 §5.6）在核心 108 配置矩阵上的结果，
 H200、严格判据、warp 作为对照：
 
 | PTX split 参数 | 严格通过 | 最大误差 | 相对 p0 新修复 / 新回归 |
@@ -649,7 +559,7 @@ warp，既不替换为保护式 TC，也不悄悄使用仍有精度失败的原 
 
 **纯 TC 同时保持严格精度与速度，仍是未解决的研究项。**
 
-### 5.8 压力测试、sanitizer 与负向测试
+### 6.8 压力测试、sanitizer 与负向测试
 
 | 检查 | 规模 | 结果 |
 |---|---|---|
@@ -664,22 +574,22 @@ sanitizer 的验证输入为 BF16、d=64、tokens=5，覆盖完整 tile 与尾�
 **不能扩大解释为所有形状已通过 sanitizer**。同理，压力测试覆盖的是选定档位，
 不是连续全域。
 
-### 5.9 一条需要单独说明的历史误差
+### 6.9 一条需要单独说明的历史误差
 
 开发期曾对 CPU FP32 未舍入真值运行 22 个配置，唯一
 `BF16 + head_dim=128 + outlier(scale=20)` 的最大绝对误差为 `6.248e-2`，看似超标。
 该项与官方 BF16 输出仍然 bit-exact，原因是输出落入 `[16,32)` 后 BF16 的 half-ULP
 已达 `0.0625`，大于题目的固定绝对阈值。
 
-**这是输出格式的舍入边界，不是 CUDA 计算错误** —— 也正是 §0.3 拒绝用 FP64/未舍入
+**这是输出格式的舍入边界，不是 CUDA 计算错误** —— 也正是 §7.3 拒绝用 FP64/未舍入
 参考做验收的原因。正式验收以同 dtype 参考库结果为准。
 
-### 5.10 历史 FP64 采样诊断（保留，不用于验收）
+### 6.10 历史 FP64 采样诊断（保留，不用于验收）
 
 以下为早期对前 4096 个 token 与 FP64 CPU 参考（同 stage 顺序、全程 double）的
 比较。`max_ulp` 以"该 token 峰值处输出 dtype 的 ULP"为单位，**不是**每个元素
-自己的 ULP，因此 `<= 0.5` 不能证明正确舍入（§0.3 第 3 条）。此表仅作诊断，
-验收结论以 §5.3、§5.4 为准。
+自己的 ULP，因此 `<= 0.5` 不能证明正确舍入（§7.3）。此表仅作诊断，
+验收结论以 §6.3、§6.4 为准。
 
 | dtype | d | 实现 | max_abs_error | max_ulp | 与 optimized 逐位一致率 |
 |---|---:|---|---:|---:|---:|
@@ -702,13 +612,92 @@ sanitizer 的验证输入为 BF16、d=64、tokens=5，覆盖完整 tile 与尾�
 | BF16 | 256 | tc_split | 1.559e-02 | 0.500 | 99.94% |
 
 `tc_split` 在 FP16 d=64/128/256 的这组样本中 100% 逐位一致，BF16 和更大维度存在
-不一致；结合 §5.4 的严格结果，**不能宣称普遍等价**。
+不一致；结合 §6.4 的严格结果，**不能宣称普遍等价**。
 
-## 6. 性能结果
+## 7. 实验设置
 
-计时口径见 §0.2，跨 GPU 规则见 §0.5。每张表都标注硬件、规模、计时方式和作业号。
+本项目横跨五种 GPU、三套计时方法和两类数值参考。为避免把不同口径的数字混在
+一起，正确性、性能和 profiler 数据均遵守以下统一约定。
 
-### 6.1 RTX 3060 Laptop：baseline 的起点
+### 7.1 状态词与结论强度
+
+| 状态 | 含义 |
+|---|---|
+| 已实现 | 代码存在并能编译 |
+| 已测试 | 在目标硬件上跑通并产出记录 |
+| 严格验收通过 | 在 §7.3 判据下逐配置通过，失败数为 0 |
+| 已确认收益 | 同后端、同硬件、多次重复测量的中位数显示稳定加速 |
+
+编译通过不等于测试通过，测试跑完不等于验收通过，单次变快不等于确认收益。
+Slurm 作业标记 `COMPLETED` 只表示流程执行完毕，不表示其中各项检查都通过。
+
+### 7.2 计时边界、预热与重复测量
+
+| 口径 | 含义 | 用途 |
+|---|---|---|
+| **CUDA Event（无 profiler）** | 同一 stream 上包围 kernel 的 Event 计时，预热后重复测量 | 正式性能数字 |
+| **CUDA Graph 回放摊销** | 捕获 16 次调用为 Graph，回放 10 次后按节点摊销 | 与外部参考库的同边界对照 |
+| **NCU duration** | Nsight Compute 单 kernel replay 报告的时间 | 仅用于 profiler 内部结构对比 |
+
+基础扫描使用 5 次预热、20 次测量；主 A/B 使用 20 次预热、100 次测量；涉及候选
+参数选择时使用独立进程重复测量并比较中位数。NCU 会串行化 kernel 并引入采集
+开销，其绝对值不能替代无 profiler 计时；Graph 摊销消除了 Python/ctypes 的调用
+开销差异，也不等于端到端 API 延迟。三种口径不跨口径计算加速比。
+
+### 7.3 数值验收判据
+
+题目规定固定绝对误差：FP16 `< 0.01`，BF16 `< 0.05`。正式参考为 Dao-AILab
+`fast_hadamard_transform` v1.1.0 的全张量低精度输出，输入、dtype、归一化 scale
+与被测实现完全相同；比较在 FP32 域覆盖全部元素，不采样，并显式拒绝 `NaN`/`Inf`。
+
+相对误差、FP64 未舍入参考和 token-peak ULP 仅用于诊断，不参与通过判定。尤其
+token-peak ULP 以 token 峰值处输出 dtype 的 ULP 为单位，不是逐元素 ULP，
+`max_ulp <= 0.5` 不能证明正确舍入。未提供外部参考时，运行仅作 optimized 回归，
+CSV 中 `pdf_verified=0`。
+
+### 7.4 三类互补的一致性检查
+
+1. 对外部参考库的绝对误差，判断是否满足题目精度要求；
+2. 与已验收路径的逐位一致率，判断新实现是否严格等价；
+3. 融合与非融合的逐位比较，判断融合是否改变结果。
+
+第 3 条必须按算法配对，例如 `fused_tc_fast` 只能与 `tc_fast` 比较。`bit-exact`
+用于验证实现语义，`MAE` / `RMSE` 用于描述 INT4 有损误差，二者不能互相替代。
+
+### 7.5 硬件、软件与输入规模
+
+| 用途 | 硬件 |
+|---|---|
+| 历史 baseline | RTX 3060 Laptop（SM 8.6） |
+| 端到端 A/B 主表 | L40S（SM 8.9） |
+| 参数调优、参考库对照、PTX 计时 | H200（SM 9.0） |
+| 缓存策略 NCU 与 Roofline | H100 SXM（SM 9.0） |
+| 国产平台 | Moore Threads S4000、MetaX C500、Iluvatar MR-V100 |
+
+软件版本随实验批次记录而非事后统一：L40S 主 A/B 与 H200 NCU 使用驱动
+580.82.07、CUDA Toolkit 13.0；H200 参考库对照及后续 PTX 补测使用同版驱动、
+CUDA Toolkit 12.8；外部参考库固定为 Dao-AILab `fast_hadamard_transform` v1.1.0。
+逐作业的完整环境快照见附录 B，避免用一套软件版本错误覆盖全部历史结果。
+
+核心输入矩阵覆盖 FP16/BF16、`head_dim=64/128/256` 和 small/medium/large 三档规模；
+严格扩展矩阵进一步覆盖 d=512/1024、normalize 开关和六种输入分布。跨 GPU 数字不
+混算，每张表均标注硬件、规模、计时方式和作业号。Roofline 使用对应采集硬件的
+规格：H200 SXM 4.8 TB/s，H100 SXM 3.35 TB/s，L40S 864 GB/s。
+
+### 7.6 Roofline 与吞吐计算
+
+- 纵轴按 FHT 有用加减次数 `tokens × d × log2(d)` 计算，不把 Tensor Core 冗余
+  稠密乘加计入收益；
+- 横轴优先使用 NCU 实测 DRAM 字节；不可用时明确标为“逻辑最小 I/O”；
+- FP32 compute roof 是非 Tensor Core 参考上限，不代表 Tensor Core 峰值利用率；
+- warm-cache 下按逻辑 I/O 计算的有效带宽可能超过 HBM 理论值，表示 L2 复用，
+  不表示超越物理带宽。
+
+## 8. 性能结果
+
+计时口径见 §7.2，跨 GPU 规则见 §7.5。每张表都标注硬件、规模、计时方式和作业号。
+
+### 8.1 RTX 3060 Laptop：baseline 的起点
 
 CUDA Event，预热 5 次、正式测量 20 次，131072 tokens：
 
@@ -726,7 +715,7 @@ CUDA Event，预热 5 次、正式测量 20 次，131072 tokens：
 说明同步和 shared-memory 访问开始占更大比例。**d=256 需要 8 次 block barrier，
 这是当时定位到的首要优化对象** —— 后续 9.1 和 warp-per-token 正是沿这条线做的。
 
-### 6.2 L40S：9.1 / 9.2 的 A/B
+### 8.2 L40S：9.1 / 9.2 的 A/B
 
 131072 tokens、normal 分布、normalize=true，CUDA Event，预热 20 次、测量 100 次，
 作业 `16970010`。`unfused` 含 optimized FHT 与独立 quantize 两个 kernel，
@@ -750,11 +739,11 @@ unfused pipeline 中占比更高）。d=256 的变换只有 1.25×，但融合�
 
 d=64/128 的输入+输出工作集分别约 32/64 MiB，小于 L40S 的 96 MiB L2；重复 warmup
 后按逻辑最小 I/O 算出的"有效带宽"可超过 864 GB/s HBM 理论值。**这是 warm-cache /
-L2 复用，不是超越显存物理上限**（§0.6）。
+L2 复用，不是超越显存物理上限**（§7.6）。
 
 ![9.1/9.2 优化与融合性能](../results/optimization_16970010/figures/advanced_performance.png)
 
-### 6.3 L40S：warp-per-token 与 Tensor Core 的同环境 A/B
+### 8.3 L40S：warp-per-token 与 Tensor Core 的同环境 A/B
 
 作业 `17083405`。由 `tensor_core/src/tc_bench.cu` 在**同一进程、同一 stream、
 同一份输入**上依次评测五条变换路径和五条融合路径，因此各行可以直接相减。
@@ -790,15 +779,15 @@ L2 复用，不是超越显存物理上限**（§0.6）。
 | BF16 | 512 | 621.11 | 251.41 | **235.25** | n/a | n/a | 1.07× |
 | BF16 | 1024 | 1277.13 | 556.81 | **468.59** | n/a | n/a | 1.19× |
 
-（`n/a` = TC 融合不支持 d>256，显式回落，见 §4.7。）
+（`n/a` = TC 融合不支持 d>256，显式回落，见 §5.4。）
 
-**可比性锚点**：`fused_opt` 一列在本轮复现出 73.38 / 73.55 / 103.85 μs，与 §6.2
-的 73.34 / 73.41 / 104.47 μs 相差 0.1%–0.6%。这说明本表与 §6.2 可比，差异不是
+**可比性锚点**：`fused_opt` 一列在本轮复现出 73.38 / 73.55 / 103.85 μs，与 §8.2
+的 73.34 / 73.41 / 104.47 μs 相差 0.1%–0.6%。这说明本表与 §8.2 可比，差异不是
 环境漂移。
 
 三点结论：
 
-1. **warp-per-token 兑现了 §6.1 指出的同步瓶颈。** d=128 去掉 1 轮 shared 交换和
+1. **warp-per-token 兑现了 §8.1 指出的同步瓶颈。** d=128 去掉 1 轮 shared 交换和
    2 次 barrier，直接换来 1.68×；d=64 本来就没有 barrier 所以持平；d=256 只有
    1.04×，因为该维度已撞到访存上限（见第 3 点）。
 2. **融合路径的收益远大于变换路径。** 9.2 的融合 kernel 是 block-per-token +
@@ -812,7 +801,7 @@ L2 复用，不是超越显存物理上限**（§0.6）。
 
 ![Tensor Core 与非 TC 对比](../tensor_core/results/tc_17083405/figures/tc_performance.png)
 
-### 6.4 H200：编译参数调优的 A/B
+### 8.4 H200：编译参数调优的 A/B
 
 作业 `17249309`、`17251073`。FP16、131072 tokens、normalize=true，CUDA Event，
 **独立重复三次取中位数**并报告 min/max，不以最快一次作为成绩。
@@ -833,11 +822,11 @@ L2 复用，不是超越显存物理上限**（§0.6）。
 
 **关键限定**：TC 变快**不代表**比 warp 快。例如 d=128 的 warp 为 25.4867 μs，
 仍优于两条 TC 路径调优后的 36.2 / 40.0 μs。H200 与历史 L40S 的最优选择不同，
-因此**不能跨架构硬编码统一 TC 分发**，该组合只作为可选构建提供（§4.9）。
+因此**不能跨架构硬编码统一 TC 分发**，该组合只作为可选构建提供（§5.6）。
 
 ![H200 重复计时](../tensor_core/results/verify_17251073/final/tuning.png)
 
-### 6.5 H200：与 Dao 参考库的同边界对照
+### 8.5 H200：与 Dao 参考库的同边界对照
 
 作业 `17289704`，H200 `gh112`，CUDA 12.8 容器，未修改的 Dao v1.1.0
 （commit `1cc807ef`）。矩阵为 FP16/BF16 × d=64/128/256/512/1024 ×
@@ -850,7 +839,7 @@ tokens=1/128/16384/131072 × normalize 开关，共 80 个配置、七条路径�
 - C ABI 桥接避免另装 PyTorch C++ 扩展，但 Python/ctypes 与参考库的调用开销不同，
   因此两侧均捕获 16 个调用为 CUDA Graph，测量 10 次回放并按 160 个节点摊销；
 - 预热、Graph 构建、输出分配不计时。结果叫 **Graph 回放摊销设备时间**，
-  既不是 Python 端到端 API 延迟，也不是 NCU 单 kernel 时间（§0.2）；
+  既不是 Python 端到端 API 延迟，也不是 NCU 单 kernel 时间（§7.2）；
 - 五轮旋转/反转后端顺序，保留中位数与 min/max；
 - 融合对照是"Dao 变换 + 本项目 standalone INT4 量化器"，**Dao 本身不提供融合
   量化**。INT4 协议、packed bytes 与 FP32 scale 一致；该对照也不是最优二 kernel
@@ -874,7 +863,7 @@ token。这是大规模小维度差异的一个合理解释，**具体占比仍�
 
 ![参考库相对性能随输入规模变化](../tensor_core/results/libperf_17289704/benchmark/library_comparison.png)
 
-### 6.6 PTX 实验路径的计时
+### 8.6 PTX 实验路径的计时
 
 **L40S**（作业 `17290837`，五轮中位数、Graph 摊销、131072 tokens、
 normalize=true，μs）：
@@ -897,10 +886,10 @@ normalize=true，μs）：
 读法：
 
 - PTX 相对**对应 WMMA** 有稳定收益（L40S d=64 约 1.30×–1.55×，H200 全维度
-  1.63×–1.87×），这与 §7.6 的 shared memory 计数器证据一致；
+  1.63×–1.87×），这与 §9.6 的 shared memory 计数器证据一致；
 - 相对 **warp** 则分维度：H200 的 d=64/128 快于 warp，d=256 没有超过；
   L40S 只在 d=64 有明显收益，d=128 fast 反而变慢，d=256 无改善；
-- **这些是未经保护的 fast/split 实验路径，§5.4 的严格正确性失败仍然存在，
+- **这些是未经保护的 fast/split 实验路径，§6.4 的严格正确性失败仍然存在，
   因此不能作为合规提交的加速数字**；
 - 结果不能跨 GPU 套用。
 
@@ -910,7 +899,7 @@ shared 均 0，launch 的 dynamic shared 也为 0。注意 WMMA 的 shared 主�
 
 ![PTX 与 WMMA 对照](../tensor_core/results/mma_17290837/mma_comparison.png)
 
-### 6.7 融合 INT4 宽写回（`QUANT_VECTOR`）
+### 8.7 融合 INT4 宽写回（`QUANT_VECTOR`）
 
 这是一个"单次最快不等于确认收益"的典型例子，因此记录完整的判断过程。
 
@@ -948,9 +937,12 @@ FP16/BF16、D=512/1024、16384/131072 tokens。固定 `f4_q0` 对照，`f4_q1` �
 
 ![宽写回独立复测](../tensor_core/results/hopper_gaps_17292654/quant_repeat.png)
 
-## 7. Profiler 与 Roofline
+## 9. 性能分析
 
-### 7.1 入口
+本章用 Nsight Systems、Nsight Compute 和 Roofline 回答“为什么变快或变慢”，并将
+结论与第 5 章的代码结构对应起来，而不是只罗列 profiler 指标。
+
+### 9.1 Profiler 入口
 
 ```bash
 bash scripts/profile.sh nsys
@@ -961,7 +953,7 @@ bash scripts/profile.sh ncu
 权限；脚本**不会修改系统权限**，无法采集时输出 `ERR_NVGPUCTRPERM` 提示并保留
 原始日志。
 
-### 7.2 硬件计数器的可用性：一段必要的环境说明
+### 9.2 硬件计数器的可用性
 
 本项目在多个节点上尝试过 NCU，结果差异很大，因此有必要说明哪些是环境问题、
 哪些不是：
@@ -988,7 +980,7 @@ bash scripts/profile.sh ncu
 不覆盖原始失败记录。后续采集脚本已把二进制 NCU 报告改存 scratch，并添加每次
 90 秒超时。
 
-### 7.3 Nsight Systems
+### 9.3 Nsight Systems：launch 与同步结构
 
 **旧版本的局限**：本机 Nsight Systems 2022.4.2 在 592 驱动上没有导出 GPU kernel
 明细，`gpukernsum` 明确报告 `does not contain CUDA kernel data`。因此本报告不据此
@@ -1019,7 +1011,7 @@ bash scripts/profile.sh ncu
 
 warp FHT 是 52 次，因为独立测试和 unfused pipeline 都会调用它。
 **`resource-limit occupancy` 由 block/寄存器/shared-memory 上限推导，不是硬件
-计数器实测的 achieved occupancy** —— 二者在 §7.4 的表里可以直接对照。
+计数器实测的 achieved occupancy** —— 二者在 §9.4 的表里可以直接对照。
 
 **这张表给出了 Tensor Core 为什么只在 d=64 赢的第一条证据。** WMMA 的代价不在 mma
 本身，而在 accumulator 与 matrix_b 的 fragment 布局不同，第 1 次 mma 的结果必须经
@@ -1033,7 +1025,7 @@ shared memory 中转。这块 scratch 让每个 block 占用 9.7–12.8 KB share
 （仍是 5 级 shuffle + 2/3 级寄存器），mma 能省下的绝对时间几乎不变，但 shared
 中转成本不变甚至更高。
 
-### 7.4 H200 硬件计数器：optimized / fused
+### 9.4 H200：optimized / fused 硬件计数器
 
 作业 `16975372`，H200 `gh112`，FP16/d=128、16384 tokens，采集 SpeedOfLight、
 MemoryWorkloadAnalysis、Occupancy、WarpStateStats：
@@ -1055,7 +1047,7 @@ scoreboard 最高（7.73），barrier 为 1.55；说明 warp shuffle 已降低 b
 
 ![H200 NCU 硬件指标](../results/ncu_retry_16975372/ncu_hardware_metrics.png)
 
-### 7.5 H200 硬件计数器：warp vs Tensor Core（TC 归因的直接证据）
+### 9.5 H200：warp vs Tensor Core 的直接证据
 
 作业 `17083350`，H200 `gh115`，FP16、d=128、16384 tokens，全部采集成功
 （`ncu_exit_status=0`）：
@@ -1075,7 +1067,7 @@ scoreboard 最高（7.73），barrier 为 1.55；说明 warp shuffle 已降低 b
 | stall mio throttle | 1.34 | **10.52** | **12.82** |
 | stall barrier | **0.00** | 1.06 | 1.32 |
 
-**stall 构成是 §7.3 那个解释的直接硬件证据**：
+**stall 构成是 §9.3 那个解释的直接硬件证据**：
 
 1. **warp FHT 的 `stall barrier` 精确为 0**，与"零 shared memory、零
    `__syncthreads()`"的设计一一对应；它的主导 stall 是 `long scoreboard`（10.64，
@@ -1095,9 +1087,9 @@ scoreboard 最高（7.73），barrier 为 1.55；说明 warp shuffle 已降低 b
 
 口径提醒：**计数器采自 H200，端到端时间采自 L40S，两组数字不混算**。NCU 的
 warp : tc_fast : tc_split = 1 : 1.55 : 1.85，与 L40S nsys 的 1 : 1.32 : 1.56
-排序一致但比例更陡 —— 这正是 NCU 串行化与采集开销的体现（§0.2）。
+排序一致但比例更陡 —— 这正是 NCU 串行化与采集开销的体现（§7.2）。
 
-### 7.6 H200 硬件计数器：PTX vs WMMA
+### 9.6 H200：PTX vs WMMA
 
 作业 `17291971`，H200 `gh108`，GPU UUID `GPU-e09d6d3e-02ea-4da2-395a-b12b71dcdbdb`。
 共 **30 项**单 kernel NCU：3 个维度（64/128/256）× 5 个后端（warp、WMMA fast/split、
@@ -1114,16 +1106,16 @@ D=128、cache-control=all：
 | short scoreboard / active issue | 6.164 | 0.976 | 5.675 | 0.716 |
 | MIO throttle / active issue | 9.675 | 2.112 | 9.630 | 1.455 |
 
-这组数据**闭合了从 §7.3 的结构猜测到 §7.5 的 stall 归因再到 §4.8 的 PTX 修改**
+这组数据**闭合了从 §9.3 的结构猜测到 §9.5 的 stall 归因再到 §5.5 的 PTX 修改**
 这条推理链：去掉 shared 中转后，dynamic shared 归零，两项相关等待同步下降。
 
 三点限定：stall 比值是 NCU `per_issue_active.ratio`，**不是百分比**；该次 PTX
 split 比 fast 更快**不能**据此断言 split 普遍更快，需要多轮独立性能计时；
-NCU 时间不与 Graph 时间混算（§0.2）。
+NCU 时间不与 Graph 时间混算（§7.2）。
 
 ![新 PTX 的 H200 实测 DRAM Roofline](../tensor_core/results/hopper_gaps_17291971/roofline.png)
 
-### 7.7 H100 硬件计数器：缓存策略与 `TC_VECTOR` 的验证
+### 9.7 H100：缓存策略与 `TC_VECTOR`
 
 作业 `17251063`，H100 80GB HBM3 SXM `gh006`，CUDA 13.0.88，未锁时钟。
 五组参数 × 两种缓存策略 × 四个目标（warp d=64/128、TC fast/split d=128），
@@ -1137,7 +1129,7 @@ NCU 时间不与 Graph 时间混算（§0.2）。
 | tensor active % | 2.574 | 3.053 | 3.271 | 4.267 |
 
 `short scoreboard` 分别减少约 **54% / 49%**，支持"向量化共享中转确实减少依赖
-等待"这一解释（对应 §4.9 采纳 `TC_VECTOR=1`）。但 MIO 压力仍高、TC 管线活跃度
+等待"这一解释（对应 §5.6 采纳 `TC_VECTOR=1`）。但 MIO 压力仍高、TC 管线活跃度
 仍只有 2.6%–4.3%，说明**只提高峰值 MMA 算力不是目前的解决点**。
 
 缓存策略显式设置为 `--cache-control all`（replay 前刷新）和 `none`（不由 profiler
@@ -1146,9 +1138,9 @@ NCU 时间不与 Graph 时间混算（§0.2）。
 
 ![H100 实测 DRAM Roofline：all 与 none](../tensor_core/results/verify_17251073/final/roofline_cache.png)
 
-### 7.8 Roofline
+### 9.8 Roofline 与瓶颈归纳
 
-计算方式见 §0.6。L40S baseline 的逻辑算术强度为 `log2(d)/4`，即
+计算方式见 §7.6。L40S baseline 的逻辑算术强度为 `log2(d)/4`，即
 1.5/1.75/2.0 FLOP/B，远低于约 106 FLOP/B 的 ridge point，因此三个维度在算法层面
 均处于 memory-side；以逻辑最小 I/O 计，达到 roof 的 52.5%–70.6%。
 
@@ -1162,14 +1154,20 @@ H100/H200 的图则使用实测 DRAM rate × duration，包含缓存/写回时�
 与三个九轮量化复测，**缺失计数器不当成 0**。缓存命中时 DRAM 点越过斜线
 不代表超越硬件带宽。
 
-## 8. 国产平台适配
+## 10. 局限与展望
+
+项目的主要边界是 Tensor Core 严格精度尚未全面通过、当前仍是算子级而非模型级
+验证，以及不同 GPU 软件栈之间仍存在维护成本。本章先用三类国产平台适配说明已有
+可移植性，再总结工程经验、完成度、已知边界与后续研究方向。
+
+### 10.1 跨平台适配与可移植性
 
 三个适配都遵守同一条原则：**不改变 CUDA 主工程的默认构建，不把 NVIDIA 专有的
 WMMA/Tensor Core 分支强行移植**，覆盖 baseline / optimized / warp / 融合 INT4
 这四条非 TC 路径以及 FP16/BF16 × d=32..1024 的静态分发。三者的性能数字**不与
 CUDA H200/L40S 的大规模结果混合比较**。
 
-### 8.1 Moore Threads MUSA（S4000）
+#### 10.1.1 Moore Threads MUSA（S4000）
 
 目录 [`musa/`](../musa/README.md)，toolkit 为 MUSA 5.1.0，编译器 `mcc`，
 用独立的 CMake language module 构建。`musa_compat.h` 负责 runtime 名称映射
@@ -1195,7 +1193,7 @@ warmup 后的四组 CUDA Event 计时。**当前验证节点未安装独立的 M
 命令行工具（如 `msprof`）**，因此本节只报告实际采集到的 kernel 时间和 CSV，
 不虚构 SM occupancy、DRAM throughput 或 stall counter。
 
-### 8.2 沐曦 MACA（MetaX C500）
+#### 10.1.2 沐曦 MACA（MetaX C500）
 
 目录 [`muxi/`](../muxi/README.md)，MACA 3.5.3，编译器 `mxcc`。该适配保持 CUDA 风格
 `.cu` 源码和 CUDA 兼容 API，通过 MACA 的 `tools/cu-bridge/include` 提供
@@ -1223,7 +1221,7 @@ MetaX C500 小规模实测（FP16，batch=1、seq=8、heads=2、d=64）：
 运行时头；随后补充 `libruntime_cu.so`，解决 `wcuda*` 运行时符号链接问题。
 以上为**单个小规模配置**，用于确认平台兼容性和实现语义。
 
-### 8.3 天数智芯 CoreX（Iluvatar MR-V100）
+#### 10.1.3 天数智芯 CoreX（Iluvatar MR-V100）
 
 目录 [`tianshu/`](../tianshu/README.md)，CoreX 4.4，使用定制 Clang 的 `ivcore`
 编译模式。注意 `/usr/local/corex/bin/nvcc` 在该环境中只是版本探测脚本，不用于编译。
@@ -1241,14 +1239,14 @@ make smoke
 1. **`PackedOps` 走标量路径** —— CoreX 的 ivcore 后端不支持 CUDA `__half2` /
    `__nv_bfloat162` 的地址空间转换，因此改为标量 load/store，**但保持相同的 FP32
    累加和低精度回写语义**；
-2. **非归一化路径的验收阈值按 `sqrt(head_dim)` 放大** —— 见 §8.4 的说明。
+2. **非归一化路径的验收阈值按 `sqrt(head_dim)` 放大** —— 见 §10.1.4 的说明。
 
 MR-V100 实测：`make` 构建两个 benchmark 成功；FP16/BF16 × `head_dim=32/64/128/
 256/512/1024` × 归一化开关共 **24 组** CPU 参考核对全部 PASS；高级路径在
 FP16/BF16 × `head_dim=64/128/256/512/1024` 上全部通过
 `optimized_vs_baseline` / `fused_vs_unfused` / `gpu_vs_cpu_quant` 三项 BIT-EXACT。
 
-### 8.4 三个适配的已知差异与工程债
+#### 10.1.4 三个平台的已知差异与工程债
 
 这一节记录的是**当前仓库状态的事实**，不是对适配质量的评价。读者在比较三个平台的
 "PASS"时需要知道它们的判据并不完全相同。
@@ -1257,7 +1255,7 @@ FP16/BF16 × `head_dim=64/128/256/512/1024` 上全部通过
 `src/main.cu` 在 `TIANSHU_COREX` 下，对 `normalize=false` 的配置把绝对误差阈值
 乘以 `sqrt(head_dim)`。理由在代码注释中写明：未归一化 Hadamard 输出的舍入误差随
 `sqrt(head_dim)` 增长。这个理由本身成立，但后果是 **d=1024 的非归一化阈值被放宽
-32 倍**，因此 CoreX 的 24/24 PASS 与 CUDA 侧 §5.3 的 132/132 **不是同一条判据下的
+32 倍**，因此 CoreX 的 24/24 PASS 与 CUDA 侧 §6.3 的 132/132 **不是同一条判据下的
 结论**，不能并列引用。
 
 **（二）判据差异：MUSA 把 `gpu_vs_cpu_quant` 从逐位改为容差。**
@@ -1297,9 +1295,9 @@ BIT-EXACT 并列**。另两项（`optimized_vs_baseline`、`fused_vs_unfused`）
 
 本报告不代表上述改造已经完成 —— 截至当前提交，`muxi/` 与 `musa/` 的副本仍然存在。
 
-## 9. 优化历程与开发中发现的问题
+### 10.2 优化历程与工程经验
 
-### 9.1 数据驱动的迭代记录
+#### 10.2.1 数据驱动的迭代记录
 
 | 阶段 | 观测/问题 | 修改 | 验证结果 |
 |---|---|---|---|
@@ -1320,7 +1318,7 @@ BIT-EXACT 并列**。另两项（`optimized_vs_baseline`、`fused_vs_unfused`）
 | TC 精度补救 | split 仍有 11 个失败 | 三段残差 + 误差包络保护 + warp 回退 | 108/108 但慢于 warp 1.5×–2.0×，不采用 |
 | 宽写回 | d=1024 每 lane 16 次 1-byte store | `QUANT_VECTOR` 宽 store | d=1024 快 6%，**d=512 退 2.5%** → 改为仅 d=1024 开启 |
 
-### 9.2 开发中发现的问题与处理
+#### 10.2.2 开发中发现的问题与处理
 
 1. **先锁定数学语义**：参考库默认 `scale=1.0`，项目默认正交归一化。测试显式传
    scale 并覆盖两种语义，避免"数值都像对的但差一个 `sqrt(d)`"。
@@ -1329,7 +1327,7 @@ BIT-EXACT 并列**。另两项（`optimized_vs_baseline`、`fused_vs_unfused`）
 3. **统一累加精度和顺序**：低精度输入转 FP32、同序蝶形、末端一次舍入，使本实现
    与参考库达到 bit-exact。
 4. **区分实现误差和格式误差**：对未舍入高精度参考的误差包含输出格式自身的舍入
-   （§5.9）。相对误差仅作诊断，验收严格比较同 dtype 参考输出的绝对误差。
+   （§6.9）。相对误差仅作诊断，验收严格比较同 dtype 参考输出的绝对误差。
 5. **不能通过改变参考对象和容差掩盖失败**：旧 TC benchmark 对 FP64 使用混合
    绝对/相对容差，这是诊断而非验收。改为全张量低精度参考绝对误差后，
    之前"通过"的配置暴露为失败，失败输入和记录一并保留。
@@ -1340,13 +1338,13 @@ BIT-EXACT 并列**。另两项（`optimized_vs_baseline`、`fused_vs_unfused`）
 7. **Tensor Core 不是"更快的后端"，而是另一种算法**：直接把 FHT 换成稠密
    `H_d @ x` 会把算术量涨 32 倍（d=256），远超 Tensor Core 的峰值优势。
 8. **Profiler 环境也是实验条件**：ncu 权限、DCGM 占用和 nsys/driver 版本决定能否
-   得到硬件指标；报告只写实际拿到的数据和明确的失败原因（§7.2）。
+   得到硬件指标；报告只写实际拿到的数据和明确的失败原因（§9.2）。
 9. **缓存会改变 Roofline 解释**：d=64/128 的重复工作集可落入 L40S 96 MiB L2，
    按逻辑 I/O 计算的带宽会超过 HBM roof。报告因此不把 warm-cache 逻辑带宽称为
    DRAM 带宽。
 10. **单次最快不是收益**：`QUANT_VECTOR` 的 d=1024 首轮候选存在 160–211 μs 的
     离群区间，且 d=512 为负收益。经三个独立进程复测后才确定只对 d=1024 开启
-    （§6.7）。同理 `TC_VECTOR=2` 的 ±0.55% 波动不视为收益。
+    （§8.7）。同理 `TC_VECTOR=2` 的 ±0.55% 波动不视为收益。
 11. **构建参数会被 make 缓存**：不同编译参数必须使用独立 `OUT` 目录，否则会复用
     上一组参数的目标文件，得到无法解释的 A/B 结果。
 12. **环境失败要和实验失败分开记**：初次严格校验因 venv 的 `/usr/bin/python` 在
@@ -1356,58 +1354,58 @@ BIT-EXACT 并列**。另两项（`optimized_vs_baseline`、`fused_vs_unfused`）
 13. **作业完成不等于检查通过**：`COMPLETED` 只表示流程执行完毕；记录中的
     `all_pass=false`、`validation_rc=1`、`benchmark_rc=1` 正是保留下来的失败。
 
-## 10. 题目要求对照
+### 10.3 题目要求完成度
 
 | 项目要求 | 状态 | 证据 |
 |---|---|---|
-| FP16，64/128/256 | 严格验收通过 | 参考库全矩阵，绝对误差 0（§5.3） |
+| FP16，64/128/256 | 严格验收通过 | 参考库全矩阵，绝对误差 0（§6.3） |
 | BF16，64/128/256 | 严格验收通过 | 同上 |
 | 多种 B/S/H 规模 | 已完成 | tokens=1/5/128/2048/16384/131072 |
-| kernel 时间日志 | 已完成 | CUDA Event + CSV（§6） |
+| kernel 时间日志 | 已完成 | CUDA Event + CSV（§8） |
 | 工程化注释与错误检查 | 已完成 | include/src/scripts 分层，统一 `CUDA_CHECK` |
-| nsys 采集 | 已完成 | L40S/2025.3 kernel timeline 与 API 汇总（§7.3） |
-| ncu 硬件计数器 | 已完成 | H200/H100 throughput、occupancy、L2、warp stall（§7.4–§7.7） |
-| Roofline 与可视化 | 已完成（口径分列） | 逻辑 I/O 与实测 DRAM 分别标注（§7.8） |
-| 9.1 shuffle/vectorized/multi-token 优化 | 已完成 + 确认收益 | L40S 1.24×–3.42×（§6.2） |
-| 9.2 INT4 融合量化及一致性 | 已完成 + 确认收益 | fused 1.26×–2.33×，三类检查全过（§5.5、§6.2） |
+| nsys 采集 | 已完成 | L40S/2025.3 kernel timeline 与 API 汇总（§9.3） |
+| ncu 硬件计数器 | 已完成 | H200/H100 throughput、occupancy、L2、warp stall（§9.4–§9.7） |
+| Roofline 与可视化 | 已完成（口径分列） | 逻辑 I/O 与实测 DRAM 分别标注（§9.8） |
+| 9.1 shuffle/vectorized/multi-token 优化 | 已完成 + 确认收益 | L40S 1.24×–3.42×（§8.2） |
+| 9.2 INT4 融合量化及一致性 | 已完成 + 确认收益 | fused 1.26×–2.33×，三类检查全过（§6.5、§8.2） |
 | INT4 压缩与误差 | 已完成 | 3.56×–3.88×，MAE 0.0912–0.1084 |
-| warp-per-token 再优化 | 已完成 + 确认收益 | d=128 再快 1.68×，与 9.1 100% 逐位一致（§6.3） |
-| Tensor Core 加速实现（进阶） | 实现完成，**非全面精度合格** | fast 96/132、split 121/132（§5.4） |
+| warp-per-token 再优化 | 已完成 + 确认收益 | d=128 再快 1.68×，与 9.1 100% 逐位一致（§8.3） |
+| Tensor Core 加速实现（进阶） | 实现完成，**非全面精度合格** | fast 96/132、split 121/132（§6.4） |
 | Tensor Core 融合量化 | 已完成（d≤256） | 与同算法 unfused 逐位一致；d>256 显式回落 |
-| Tensor Core vs 非 TC 对比（进阶） | 已完成 | 同进程十路径 A/B + 两条独立硬件证据（§6.3、§7.5） |
-| 与外部参考库对比 | 已完成 | H200 80 配置 Graph 摊销对照（§6.5） |
-| 国产平台适配 | 已完成（三平台） | MUSA / MACA / CoreX（§8），判据差异见 §8.4 |
-| FP8 输出 | **未实现** | §11 |
+| Tensor Core vs 非 TC 对比（进阶） | 已完成 | 同进程十路径 A/B + 两条独立硬件证据（§8.3、§9.5） |
+| 与外部参考库对比 | 已完成 | H200 80 配置 Graph 摊销对照（§8.5） |
+| 国产平台适配 | 已完成（三平台） | MUSA / MACA / CoreX（§10.1），判据差异见 §10.1.4 |
+| FP8 输出 | **未实现** | §10.4 |
 
 关于第 4 项对比中最容易被放大的数字，需要特别说明：**Tensor Core 的加速比必须对
 最好的非 TC 实现计算**。若只对教学 baseline 比较，`tc_fast` 在 d=64 上会显示
 4.0×；对 warp-per-token 只有 1.16×。本报告一律采用后者。
 
-## 11. 未完成项与边界
+### 10.4 当前边界与后续工作
 
 本节列出**明确未做到的事**。它们不是"下一步可以考虑"的泛泛建议，而是当前实现的
 硬边界。
 
-### 11.1 已知的功能边界
+#### 10.4.1 已知的功能边界
 
 | 边界 | 说明 |
 |---|---|
 | **FP8 输出未实现** | 它是另一套输出格式与标度协议（E4M3/E5M2 的 scale 粒度、饱和、NaN/Inf 语义），不应与已验收的 INT4 数据混写 |
-| **TC 融合 INT4 仅支持 d ≤ 256** | d>256 时一个 token 跨多个 tile，per-token max 无法只靠 sub-warp 归约；接口显式返回不支持并由调用方回落（§4.7），这是刻意限制 |
+| **TC 融合 INT4 仅支持 d ≤ 256** | d>256 时一个 token 跨多个 tile，per-token max 无法只靠 sub-warp 归约；接口显式返回不支持并由调用方回落（§5.4），这是刻意限制 |
 | **Tensor Core 分支要求 SM ≥ 80** | BF16 WMMA 的硬件要求 |
 | **PTX 分支仅覆盖 d=64/128/256** | 无 d=512/1024，无 PTX 专用融合量化；warp 路径的大维度与融合 INT4 不受影响 |
 | **`warp` 路径要求 d ≥ 64** | d=32 走 9.1 路径 |
 
-### 11.2 未解决的研究问题
+#### 10.4.2 未解决的研究问题
 
-1. **纯 Tensor Core 同时满足严格精度与速度。** 当前保护过于昂贵（§5.7）。可研究
+1. **纯 Tensor Core 同时满足严格精度与速度。** 当前保护过于昂贵（§6.7）。可研究
    更紧的误差界、低成本的危险输出检测和更少的回退，但**必须重新验收，不放宽阈值**。
-2. **`tc_split` 的 11 个失败尚未修复。** §5.6 已定位到残差表示、累加次序和 native
+2. **`tc_split` 的 11 个失败尚未修复。** §6.6 已定位到残差表示、累加次序和 native
    舍入中点三类成因，但修复需要分别研究，本报告**没有**宣布已修复。
-3. **参考库本身不是 FP64 精确舍入**（§5.6）。这意味着"换更精确的算法"不一定能
+3. **参考库本身不是 FP64 精确舍入**（§6.6）。这意味着"换更精确的算法"不一定能
    满足与参考库的固定绝对误差要求，需要更细致的等价性论证。
 
-### 11.3 未做的工程与实验
+#### 10.4.3 后续工程与实验
 
 1. **模型端到端集成。** 当前是算子级合成输入与压力测试，**不是模型端到端加速**。
    要报告端到端延迟/吞吐和量化任务质量，需要指定模型、真实激活分布及调用方式。
@@ -1418,17 +1416,17 @@ BIT-EXACT 并列**。另两项（`optimized_vs_baseline`、`fused_vs_unfused`）
    Roofline。
 4. **真实分布覆盖。** 当前六种输入分布仍是合成的，缺少真实模型 activation。
 5. **Tensor Core 的 INT8/FP8 通路。** Hadamard 矩阵元素是 `±1`，若下游本来就要
-   INT4/FP8 输出，可考虑先量化再在整数 Tensor Core 上做变换，彻底绕开 §4.7 的中间
+   INT4/FP8 输出，可考虑先量化再在整数 Tensor Core 上做变换，彻底绕开 §5.4 的中间
    舍入问题；代价是变换与量化的顺序改变，**需要重新论证与 QuaRot 语义的等价性**。
 6. **d > 256 的 TC 融合量化。** 可利用 tile 间 accumulator 已在同一 warp 寄存器内
    这一点做两级归约来支持。
 7. **按形状自适应分发的推广。** `WARPS=0` 在 H200 上收益明确，但跨架构最优不同
-   （§6.4）。需要为更多 tokens 档位和 GPU 架构做交错 A/B，之后才决定是否改默认。
-8. **国产平台的判据统一与源码去重。** 见 §8.4，`muxi/` 与 `musa/` 的副本仍在。
+   （§8.4）。需要为更多 tokens 档位和 GPU 架构做交错 A/B，之后才决定是否改默认。
+8. **国产平台的判据统一与源码去重。** 见 §10.1.4，`muxi/` 与 `musa/` 的副本仍在。
 
-## 12. 复现命令
+## 附录 A：复现命令
 
-### 12.1 主项目
+### A.1 主项目
 
 ```bash
 # 构建（两种方式等价）
@@ -1456,7 +1454,7 @@ bash scripts/run_advanced.sh
 ~/hadamard_env/bin/python tests/test_vs_library.py
 ```
 
-### 12.2 Tensor Core / PTX 分支
+### A.2 Tensor Core / PTX 分支
 
 ```bash
 # 构建（L40S=89, A100=80, H100/H200=90；BF16 WMMA 需要 SM >= 80）
@@ -1494,7 +1492,7 @@ cmake -S . -B build/h200-selective-cmake -DCMAKE_CUDA_ARCHITECTURES=90 \
 cmake --build build/h200-selective-cmake -j4
 ```
 
-### 12.3 Profiler 与集群作业
+### A.3 Profiler 与集群作业
 
 ```bash
 bash scripts/profile.sh nsys
@@ -1523,7 +1521,7 @@ sbatch tensor_core/slurm/guard_and_selective_quant.slurm
 各阶段相互依赖时使用 `sbatch --dependency=afterok:<上一 job>` 串行。
 输出目录必须按运行区分，**不要向已有 CSV 追加新 schema**，`run_tc.sh` 会拒绝覆盖。
 
-### 12.4 国产平台
+### A.4 国产平台
 
 ```bash
 cd musa    && source env.sh && make -j2 && make smoke
@@ -1531,9 +1529,9 @@ cd muxi    && source env.sh && make -j2 && make smoke
 cd tianshu && source env.sh && make COREX_CXX=/path/to/corex/clang++ && make smoke
 ```
 
-## 13. 证据索引
+## 附录 B：证据索引
 
-### 13.1 主项目
+### B.1 主项目
 
 | 产物 | 内容 |
 |---|---|
@@ -1545,7 +1543,7 @@ cd tianshu && source env.sh && make COREX_CXX=/path/to/corex/clang++ && make smo
 | [`results/ncu_retry_16975370/`](../results/ncu_retry_16975370/) | A100 counter 被 DCGM 占用的跨架构证据 |
 | [`results/ncu_retry_16975372/`](../results/ncu_retry_16975372/README.md) | **H200 NCU 成功报告、raw CSV、硬件指标图** |
 
-### 13.2 Tensor Core / PTX 分支
+### B.2 Tensor Core / PTX 分支
 
 | 产物 | 内容 |
 |---|---|
@@ -1567,21 +1565,21 @@ cd tianshu && source env.sh && make COREX_CXX=/path/to/corex/clang++ && make smo
 | [`tensor_core/results/guard_quant_17294196/summary.md`](../tensor_core/results/guard_quant_17294196/summary.md) | 保护式 TC 的最终检查与性能成本 |
 | [`tensor_core/results/gap_builds_17294647/`](../tensor_core/results/gap_builds_17294647/) | 三套构建的交付检查日志 |
 
-### 13.3 国产平台
+### B.3 国产平台
 
 | 产物 | 内容 |
 |---|---|
-| [`musa/results/musa_validation.csv`](../musa/results/musa_validation.csv) | S4000 验证 CSV（版本说明见 §8.4） |
+| [`musa/results/musa_validation.csv`](../musa/results/musa_validation.csv) | S4000 验证 CSV（版本说明见 §10.1.4） |
 | [`musa/README.md`](../musa/README.md)、[`muxi/README.md`](../muxi/README.md)、[`tianshu/README.md`](../tianshu/README.md) | 三平台的构建入口与已验证环境 |
 
-### 13.4 归档
+### B.4 归档
 
 约 200 MiB 的逐配置控制台日志、失败样本、profiler 二进制和中间汇总已迁至 scratch
 归档，逐项记录在 [`docs/cleanup_manifest.csv`](cleanup_manifest.csv)，
 执行与恢复说明见 [目录整理与归档](repository_cleanup.md)。
 **scratch 受集群保留/清理策略约束，不等于永久备份。**
 
-## 14. 参考资料
+## 附录 C：参考资料
 
 1. [QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs](https://arxiv.org/abs/2404.00456)
 2. [SpinQuant: LLM quantization with learned rotations](https://arxiv.org/abs/2405.16406)

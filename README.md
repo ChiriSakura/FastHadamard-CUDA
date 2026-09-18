@@ -9,9 +9,6 @@ Hadamard 旋转把能量扩散到多个通道，降低单通道动态范围，�
 这是 QuaRot / SpinQuant 一类 4-bit 量化方案的前置算子。
 
 > **完整技术报告：[`docs/final_report.md`](docs/final_report.md)。**
-> README 只覆盖"这是什么、怎么跑、结论是什么、边界在哪"，推导、逐配置数据和
-> 全部实验记录在报告中。
-
 ---
 
 ## 1. 实现了哪些路径
@@ -22,7 +19,7 @@ Hadamard 旋转把能量扩散到多个通道，降低单通道动态范围，�
 | 路径 | 关键结构 | 状态 |
 |---|---|---|
 | `baseline` | 一 block 一 token，全程 shared memory 蝶形 | 严格验收通过；保留为正确性锚点 |
-| `optimized`（9.1） | `half2`/`bfloat162` packed I/O + warp shuffle + 多 token/block | 严格验收通过 |
+| `optimized`| `half2`/`bfloat162` packed I/O + warp shuffle + 多 token/block | 严格验收通过 |
 | `warp`（warp-per-token） | 每线程 `d/32` 元素，**0 shared memory、0 barrier** | 严格验收通过，**推荐默认** |
 | `tc_fast` / `tc_split` | Kronecker 分解 + 两/三次 `m16n16k16` WMMA | 已实现，**严格验收有保留失败** |
 | `ptx_fast` / `ptx_split` | 显式 `mma.sync` + warp shuffle，消除 shared 中转 | 实验路径，**未接入默认分发** |
@@ -82,19 +79,13 @@ bash scripts/profile.sh nsys
 bash scripts/profile.sh ncu          # 需要 GPU performance-counter 权限
 ```
 
-脚本**不会修改系统权限**；无法采集时输出 `ERR_NVGPUCTRPERM` 或
-`driver resource was unavailable` 并保留原始日志，不会用推导值冒充实测计数器。
-集群上的完整作业模板见 [`slurm/`](slurm/) 与
-[`tensor_core/slurm/`](tensor_core/slurm/README.md)，命令清单见报告 §12。
-
 ## 3. 怎么读本项目的数字
 
-这套结果横跨五种 GPU、三种计时方法和两类数值参考。**多数误读来自把口径不同的
-数字放在一起比较**，所以先说清约定（完整版见报告 §0）：
+这套结果横跨五种 GPU、三种计时方法和两类数值参考。
 
 **状态词分四级，不可互相替代**：已实现（能编译）→ 已测试（跑通并有记录）→
 严格验收通过（逐配置通过且失败数为 0）→ 已确认收益（多次重复测量的中位数稳定
-更快）。Slurm 作业 `COMPLETED` 只表示流程跑完，不表示检查都通过。
+更快）。
 
 **三种计时口径互不混算**：CUDA Event（无 profiler，正式性能数字）、
 CUDA Graph 回放摊销（与外部库的同边界对照）、NCU duration（仅用于 profiler 内部
@@ -133,9 +124,9 @@ TC 的失败主要集中在非归一化输入（split 的 11 个失败全部如�
 
 ### 4.2 性能（L40S，131072 tokens，normalize=true，CUDA Event）
 
-变换 kernel（avg μs，粗体为该行最快，作业 `17083405`）：
+变换 kernel（avg μs，粗体为该行最快）：
 
-| dtype | d | baseline | optimized (9.1) | warp | tc_fast | tc_split |
+| dtype | d | baseline | optimized  | warp | tc_fast | tc_split |
 |---|---:|---:|---:|---:|---:|---:|
 | FP16 | 64 | 73.43 | 21.31 | 21.41 | **18.38** | 21.73 |
 | FP16 | 128 | 109.80 | 38.73 | **23.01** | 32.13 | 38.71 |
@@ -146,7 +137,7 @@ TC 的失败主要集中在非归一化输入（split 的 11 个失败全部如�
 
 融合 INT4 端到端（avg μs；`unfused` = warp FHT + 独立 quantize 两个 kernel）：
 
-| dtype | d | unfused | fused_opt (9.2) | fused_warp | fused_tc_fast | fused_warp / 9.2 |
+| dtype | d | unfused | fused_opt  | fused_warp | fused_tc_fast | fused_warp |
 |---|---:|---:|---:|---:|---:|---:|
 | FP16 | 64 | 92.81 | 73.38 | 22.09 | **18.58** | 3.32× |
 | FP16 | 128 | 94.37 | 73.55 | **28.82** | 32.85 | 2.55× |
@@ -167,7 +158,7 @@ TC 融合不支持 d>256（此时一个 token 跨多个 tile，per-token max 无
 
 ### 4.3 与外部参考库的对照（H200，Graph 回放摊销）
 
-FP16、131072 tokens、normalize=true，中位数 μs，作业 `17289704`。两侧同 GPU、
+FP16、131072 tokens、normalize=true，中位数 μs。两侧同 GPU、
 同输入地址、同 stream，各捕获 16 次调用为 CUDA Graph 后摊销：
 
 | d | Dao v1.1.0 | warp | Dao/warp | Dao+量化 | fused_warp | pipeline/fused |
@@ -184,17 +175,17 @@ Dao 本身不提供融合量化。
 
 ![参考库相对性能随输入规模变化](tensor_core/results/libperf_17289704/benchmark/library_comparison.png)
 
-### 4.4 关键结论：Tensor Core 为什么只在 d=64 赢
+### 4.4 关键结论：Tensor Core 为什么只在 d=64 有效
 
 这是本项目最实质的发现。归因由**两条互相独立的证据**支撑，另有一条修改后的
 验证性证据。
 
-**证据一 —— launch 结构（nsys）**：WMMA 的 accumulator 与 matrix_b fragment 内部
+**证据一： launch 结构（nsys）**：WMMA 的 accumulator 与 matrix_b fragment 内部
 布局不同，第 1 次 mma 的结果必须经 shared memory 中转。这块 scratch 占
 9.7–12.8 KB/block，把 resource-limit occupancy 从 100% 压到 83.3%/66.7%，
 寄存器从 21 涨到 30–34。而 warp 路径的 shared memory 用量是 **0**。
 
-**证据二 —— stall 构成（H200 NCU，FP16/d=128）**：
+**证据二： stall 构成（H200 NCU，FP16/d=128）**：
 
 | 指标 | warp | tc_fast | tc_split |
 |---|---:|---:|---:|
@@ -209,7 +200,7 @@ warp 路径的 `stall barrier` **精确为 0**，主导 stall 是 global memory 
 一个访存受限算子应有的样子。两条 TC kernel 的主导 stall 换成了 `short scoreboard`
 与 `mio throttle`：**它们在等 shared memory，不是在等显存**。
 
-**证据三（验证性）—— 显式 PTX**：用 `mma.sync` + warp shuffle 直接完成
+**证据三（验证性： 显式 PTX**：用 `mma.sync` + warp shuffle 直接完成
 accumulator → operand 重排后，H200 D=128 的 dynamic shared 从 9728 B 降到 **0**，
 `short scoreboard / active issue` 从 6.164 降到 0.976，NCU 时间 6.304 → 4.992 μs。
 这闭合了整条推理链 —— 但 PTX 与 WMMA 输出逐位一致，**也就继承了同样的精度失败**。
@@ -233,27 +224,27 @@ d=64 上显示 4.0×；对 warp-per-token 只有 1.16×。本项目一律采用�
 FastHadamard-CUDA/
 ├── include/                  # 稳定 host API、dtype、CUDA 错误检查宏
 ├── src/
-│   ├── hadamard.cu           # baseline + 9.1 optimized + 9.2 fused INT4
+│   ├── hadamard.cu           # baseline + optimized + fused INT4
 │   ├── hadamard_warp.cu      # warp-per-token FHT（0 shared / 0 barrier）
 │   ├── main.cu               # 计时、dump、CSV
 │   ├── advanced_bench.cu     # A/B 与三类 bit-exact 检查
 │   └── reference_cpu.h       # 开发期 FP32 自检
 ├── tensor_core/              # WMMA / PTX / 精度诊断实验分支 + 对照基准
-├── musa/ muxi/ tianshu/      # 国产平台适配（第 7 节）
+├── musa/ muxi/ tianshu/      # 国产平台适配
 ├── tests/                    # 参考库验收入口与 CPU 工具测试
 ├── scripts/ slurm/           # 一键测试、profiler 采集、集群作业模板
 ├── results/                  # 主项目的实测 CSV、图表与 profiler 证据
 ├── docs/
 │   ├── final_report.md       # 唯一技术报告
 │   ├── repository_cleanup.md # 归档与恢复说明
-│   └── cleanup_manifest.csv  # 归档清单（约 200 MiB 原始数据已迁至 scratch）
+│   └── cleanup_manifest.csv  # 归档清单
 ├── CMakeLists.txt  Makefile
 ```
 
 ## 6. 编译期可选参数
 
 所有优化候选都以编译参数提供，**默认值一律保持原有行为**，不因某次 A/B 的最快
-结果自动切换。完整取值与采纳/拒绝理由见报告 §4.9。
+结果自动切换。完整取值与采纳/拒绝理由见报告。
 
 | Make 变量 | CMake 选项 | 说明 |
 |---|---|---|
@@ -281,7 +272,7 @@ make CUDA_ARCH=90 WARPS=0 QUANT_VECTOR=2 OUT=build/h200-selective # 仅 d=1024 �
 
 | 目录 | 平台 | 工具链 | 验证硬件 |
 |---|---|---|---|
-| [`musa/`](musa/README.md) | Moore Threads MUSA | MUSA 5.1.0 / `mcc` | S4000 |
+| [`musa/`](musa/README.md) | 摩尔线程 MUSA | MUSA 5.1.0 / `mcc` | S4000 |
 | [`muxi/`](muxi/README.md) | 沐曦 MACA | MACA 3.5.3 / `mxcc` | MetaX C500 |
 | [`tianshu/`](tianshu/README.md) | 天数智芯 CoreX | CoreX 4.4 / `ivcore` clang++ | Iluvatar MR-V100 |
 
@@ -290,8 +281,6 @@ cd musa    && source env.sh && make -j2 && make smoke
 cd muxi    && source env.sh && make -j2 && make smoke
 cd tianshu && source env.sh && make COREX_CXX=/path/to/corex/clang++ && make smoke
 ```
-
-三个平台的性能数字**不与 CUDA H200/L40S 的大规模结果混合比较**。
 
 
 ## 许可
