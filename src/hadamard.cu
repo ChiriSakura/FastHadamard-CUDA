@@ -74,6 +74,19 @@ struct PackedOps;
 
 template <>
 struct PackedOps<__half> {
+#if defined(TIANSHU_COREX)
+  // CoreX 的 ivcore 后端不支持 CUDA __half2 地址空间转换；标量路径保留
+  // 相同的 FP32 累加和低精度回写语义。
+  using Packed = __half;
+  __device__ static float2 load(const __half* ptr, int pair) {
+    return make_float2(__half2float(ptr[pair * 2]),
+                       __half2float(ptr[pair * 2 + 1]));
+  }
+  __device__ static void store(__half* ptr, int pair, float2 value) {
+    ptr[pair * 2] = __float2half_rn(value.x);
+    ptr[pair * 2 + 1] = __float2half_rn(value.y);
+  }
+#else
   using Packed = __half2;
   __device__ static float2 load(const __half* ptr, int pair) {
     return __half22float2(reinterpret_cast<const Packed*>(ptr)[pair]);
@@ -81,6 +94,7 @@ struct PackedOps<__half> {
   __device__ static void store(__half* ptr, int pair, float2 value) {
     reinterpret_cast<Packed*>(ptr)[pair] = __floats2half2_rn(value.x, value.y);
   }
+#endif
   __device__ static float round_scalar(float value) {
     return __half2float(__float2half_rn(value));
   }
@@ -88,6 +102,17 @@ struct PackedOps<__half> {
 
 template <>
 struct PackedOps<__nv_bfloat16> {
+#if defined(TIANSHU_COREX)
+  using Packed = __nv_bfloat16;
+  __device__ static float2 load(const __nv_bfloat16* ptr, int pair) {
+    return make_float2(__bfloat162float(ptr[pair * 2]),
+                       __bfloat162float(ptr[pair * 2 + 1]));
+  }
+  __device__ static void store(__nv_bfloat16* ptr, int pair, float2 value) {
+    ptr[pair * 2] = __float2bfloat16_rn(value.x);
+    ptr[pair * 2 + 1] = __float2bfloat16_rn(value.y);
+  }
+#else
   using Packed = __nv_bfloat162;
   __device__ static float2 load(const __nv_bfloat16* ptr, int pair) {
     return __bfloat1622float2(reinterpret_cast<const Packed*>(ptr)[pair]);
@@ -96,6 +121,7 @@ struct PackedOps<__nv_bfloat16> {
     reinterpret_cast<Packed*>(ptr)[pair] =
         __floats2bfloat162_rn(value.x, value.y);
   }
+#endif
   __device__ static float round_scalar(float value) {
     return __bfloat162float(__float2bfloat16_rn(value));
   }

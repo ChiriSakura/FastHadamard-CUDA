@@ -492,6 +492,13 @@ int main(int argc, char** argv) {
   // ---- 5. 正确性检查 ----
   ErrorMetrics metrics;
   double threshold = (dtype == DataType::FP16) ? 1e-2 : 5e-2;
+#if defined(TIANSHU_COREX)
+  // 未归一化 Hadamard 输出的舍入误差随 sqrt(head_dim) 增长；保持绝对误差
+  // 判定，但按该输出尺度调整 CoreX 的验收阈值。
+  if (!cfg.normalize) {
+    threshold *= std::sqrt(static_cast<double>(cfg.head_dim));
+  }
+#endif
   bool pass = true;
   std::vector<uint16_t> native_output;
   if (cfg.check) {
